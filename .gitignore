@@ -1,0 +1,18 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+
+# 运行时数据（拼图进度落库，含用户数据，不进版本库）
+puzzle-data.json
+
+# 日志与系统垃圾
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
