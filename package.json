@@ -1,0 +1,20 @@
+{
+  "name": "puzzle-map",
+  "version": "9.0.0",
+  "private": true,
+  "description": "局域网拼图定位台（触摸屏）：Vite + Express + ws 统一框架",
+  "type": "module",
+  "scripts": {
+    "dev": "node server/index.js",
+    "build": "vite build",
+    "start": "node server/index.js --prod",
+    "preview": "npm run build && npm start"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.11"
+  }
+}

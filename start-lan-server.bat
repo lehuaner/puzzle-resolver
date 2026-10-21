@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 echo ============================================
 echo   拼图定位台 - 局域网服务
-echo   静态页面 + WebSocket 实时同步 + 数据落盘
+echo   Vite + Express + ws 统一框架
 echo   端口 8848
 echo ============================================
 echo.
@@ -15,8 +15,25 @@ echo.
 
 set NODE_EXE=C:\Users\乐幻\.workbuddy\binaries\node\versions\22.22.2-6\node.exe
 if not exist "%NODE_EXE%" set NODE_EXE=node
+set NPM_CLI=C:\Users\乐幻\.workbuddy\binaries\node\versions\22.22.2-6\node_modules\npm\bin\npm-cli.js
 
-"%NODE_EXE%" server.js 8848
+rem ---- 首次运行先构建前端；已有 dist/ 则直接启动 ----
+if not exist dist\index.html (
+  echo [首次运行] 正在构建前端...
+  if exist "%NPM_CLI%" (
+    "%NODE_EXE%" "%NPM_CLI%" run build
+  ) else (
+    call npm run build
+  )
+  if errorlevel 1 (
+    echo.
+    echo 构建失败，请检查上面的错误信息。
+    pause
+    exit /b 1
+  )
+)
+
+"%NODE_EXE%" server\index.js --prod
 
 echo.
 echo 服务已停止。

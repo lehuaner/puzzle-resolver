@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0a0e15">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>拼图定位台</title>
+</head>
+<body>
+<div id="app">
+  <header>
+    <button class="bboard" id="bBoards" title="切换 / 管理拼图">
+      <i class="dotst" id="wsDot"></i><span id="boardName">加载中…</span><span class="chev">▾</span>
+    </button>
+    <div class="brand">拼图定位台</div>
+    <div class="prog">
+      <div class="prog-bar"><i id="progFill"></i></div>
+      <div class="prog-txt"><b id="tDone">0</b> / <span id="tTotal">1000</span> · <span id="tPct">0.0%</span><span id="tPendWrap" style="display:none"> · 待定 <b class="pend" id="tPending">0</b></span></div>
+    </div>
+    <div class="hbtns">
+      <button class="btn" id="bUndo">↶ 撤销</button>
+      <button class="btn primary" id="bSearch">找点</button>
+      <button class="btn" id="bScan">识别</button>
+      <button class="btn" id="bSet">设置</button>
+      <button class="btn" id="bFull">全屏</button>
+    </div>
+  </header>
+
+  <div class="zones" id="zones"></div>
+
+  <div class="wrap" id="wrap">
+    <div class="board" id="board"></div>
+    <div class="zoombar">
+      <button id="zIn" aria-label="放大">＋</button>
+      <button id="zOut" aria-label="缩小">－</button>
+      <button id="zFit" class="fit" aria-label="适应屏幕">⤢</button>
+      <div class="zoomval" id="zVal">100%</div>
+    </div>
+    <canvas id="mm" class="mm-br"></canvas>
+  </div>
+
+  <div class="legend" id="legend">
+    <span class="lg"><i class="dot g"></i>未拼</span>
+    <span class="lg"><i class="dot d"></i>已完成</span>
+    <span class="lg"><i class="dot p"></i>待定片</span>
+    <span class="lg"><i class="dot p2"></i>孤片</span>
+    <span class="lg"><i class="dot f"></i>进行中</span>
+    <span class="hint">拖动空白处平移画布 · 长按格子进批量模式</span>
+  </div>
+
+  <div class="batchbar" id="batchbar">
+    <div class="binfo">批量模式 · 已选 <b id="selN">0</b> 块</div>
+    <div class="bbtns">
+      <button class="btn ok" data-act="1">设为已拼</button>
+      <button class="btn" data-act="3">标为待定</button>
+      <button class="btn" data-act="0">设为未拼</button>
+      <button class="btn warn" data-act="2">进行中</button>
+      <button class="btn ghost" data-act="exit">退出</button>
+    </div>
+  </div>
+</div>
+
+<!-- 我的拼图（多设备共用同一张图） -->
+<div class="ov" id="ovBoards">
+  <div class="sheet">
+    <div class="sheet-head">
+      <div class="sheet-title">我的拼图</div>
+      <div class="wsstat" id="wsStat">未连接</div>
+      <div style="flex:1"></div>
+      <button class="btn primary sm" id="bNewBoard">＋ 新建</button>
+      <button class="btn ghost" id="boardsClose">关闭</button>
+    </div>
+    <div class="blist" id="boardList"></div>
+    <div class="bfoot">同一局域网的手机 / 平板打开同一个地址，进入同一张图即可实时同步；所有改动都会立刻存到服务器。</div>
+  </div>
+</div>
+
+<!-- 找点 -->
+<div class="ov" id="ovSearch">
+  <div class="sheet">
+    <div class="sheet-head">
+      <div class="sheet-title">找点</div>
+      <input id="q" placeholder="编号 / A123 / A / 100-200 / 行5 / 列3" autocomplete="off" spellcheck="false">
+      <button class="btn ghost" id="qClose">关闭</button>
+    </div>
+    <div class="chips" id="chipsZone"></div>
+    <div class="chips" id="chipsState"></div>
+    <div class="scope">范围：<b id="scopeText">全部 1000 块</b> · 命中 <b id="hitCount">0</b> 块</div>
+    <div class="results" id="results"></div>
+  </div>
+</div>
+
+<!-- 设置 -->
+<div class="ov" id="ovSet">
+  <div class="sheet">
+    <div class="sheet-head">
+      <div class="sheet-title">设置</div><div style="flex:1"></div>
+      <button class="btn ghost" id="setClose">关闭</button>
+    </div>
+    <div class="set-body">
+      <div class="row">
+        <label>总片数<span class="desc">整幅拼图的块数，案例为 1000</span></label>
+        <input class="num" id="fTotal" type="number" min="4" max="4000" step="1" inputmode="numeric">
+      </div>
+      <div class="row">
+        <label>每行片数<span class="desc">列数。1000 片建议 40，行数自动算出</span></label>
+        <input class="num" id="fCols" type="number" min="2" max="100" step="1" inputmode="numeric">
+      </div>
+      <div class="row">
+        <label>每个大区片数<span class="desc">1000 片按 250 分 ABCD 四区</span></label>
+        <input class="num" id="fZone" type="number" min="1" max="4000" step="1" inputmode="numeric">
+      </div>
+      <div class="row">
+        <label>点尺寸<span class="desc">每块的固定边长（像素），不随屏幕变化</span></label>
+        <div class="seg" id="segSize">
+          <button data-v="40">40</button><button data-v="48">48</button>
+          <button data-v="56">56</button><button data-v="64">64</button>
+          <button data-v="80">80</button>
+        </div>
+      </div>
+      <div class="row">
+        <label>编号起点<span class="desc">001 放在哪个角</span></label>
+        <div class="seg" id="segOrigin">
+          <button data-v="tl">左上</button><button data-v="tr">右上</button>
+          <button data-v="bl">左下</button><button data-v="br">右下</button>
+        </div>
+      </div>
+      <div class="row">
+        <label>递增方向<span class="desc">列优先＝先顺着竖向数满一列，再挪到下一列</span></label>
+        <div class="seg" id="segOrder">
+          <button data-v="col">列优先</button><button data-v="row">行优先</button>
+        </div>
+      </div>
+      <div class="row">
+        <label>显示块编号<span class="desc">格子里显示 001 这样的数字</span></label>
+        <div class="seg" id="segShow">
+          <button data-v="1">显示</button><button data-v="0">隐藏</button>
+        </div>
+      </div>
+      <div class="preview" id="cfgPreview"></div>
+      <div class="row" style="border-top:1px solid #1b2531;margin-top:10px">
+        <label>数据<span class="desc">进度自动存在本机浏览器，换设备请导出导入</span></label>
+        <button class="btn" id="bExport">导出</button>
+        <button class="btn" id="bImport">导入</button>
+        <input type="file" id="fImport" accept=".json,application/json" style="display:none">
+      </div>
+      <div class="row">
+        <label style="color:#ff9b9b">清空本幅进度<span class="desc">所有块回到未拼状态</span></label>
+        <button class="btn danger" id="bReset">清空</button>
+      </div>
+    </div>
+    <div class="set-foot">
+      <button class="btn" id="bDefault">恢复默认</button>
+      <div style="flex:1"></div>
+      <button class="btn primary" id="bApply">保存并重建</button>
+    </div>
+  </div>
+</div>
+
+<!-- 识别 -->
+<div class="ov" id="ovScan">
+  <div class="sheet wide">
+    <div class="sheet-head">
+      <div class="sheet-title">照片识别</div>
+      <button class="btn ghost sm" id="bScanHelp" title="使用说明">?</button>
+      <div style="flex:1"></div>
+      <button class="btn primary sm" id="bPickImg">选择照片</button>
+      <button class="btn ghost" id="scanClose">关闭</button>
+      <input type="file" id="fImg" accept="image/*" style="display:none">
+    </div>
+    <div class="scan-body">
+      <div class="scan-stage" id="scanStage">
+        <canvas id="scanCanvas"></canvas>
+        <div class="scan-bar">
+          <button id="szIn" title="放大">＋</button>
+          <button id="szOut" title="缩小">－</button>
+          <button id="szFit" title="适应窗口">⤢</button>
+          <span class="sdiv"></span>
+          <button id="smMove" class="on" data-m="move">移动照片</button>
+          <button id="smGrid" data-m="grid">微调网格</button>
+          <button id="smEdit" data-m="edit">增删结果</button>
+        </div>
+        <div class="scan-tip" id="scanTip" style="display:none"></div>
+        <div class="scan-pick" id="scanPick">
+          <h4>这一块上印的数字</h4>
+          <div class="pk-zoom">
+            <canvas id="pickZoom" width="176" height="176"></canvas>
+            <div class="pk-zbtns">
+              <button data-z="out">－</button><span id="pkZoomVal">×3</span><button data-z="in">＋</button>
+            </div>
+          </div>
+          <input class="pk-num" id="pickNum" inputmode="numeric" placeholder="例如 801" maxlength="6">
+          <div class="pk-res" id="pickRes">对应全局第 <b>-</b> 块</div>
+          <div class="pk-btns">
+            <button class="btn ghost sm" id="pickCancel">取消</button>
+            <button class="btn ok sm" id="pickOk">确定</button>
+          </div>
+        </div>
+      </div>
+      <div class="scan-side">
+        <div class="scan-stat" id="scanStat">
+          <div class="k">识别到已完成的块</div>
+          <div class="v g" id="scanFound">0</div>
+          <div class="row2"><span>照片内可判定的格</span><b id="scanCells">0</b></div>
+          <div class="row2"><span>其中新增</span><b id="scanNew">0</b></div>
+          <div class="row2"><span>其中待定（未连主片）</span><b id="scanPend" style="color:#f0b13c">0</b></div>
+        </div>
+        <div class="scan-help" id="scanHelp">
+          <div class="scan-step" id="scanStep">
+            1. 选择一张<b>拼图正面朝上</b>或背面的照片<br>
+            2. 点照片里<b>任意两块拼图中心</b>并输入编号（点中会放大显示，方便看清数字）<br>
+            3. 系统自动识别所有已拼的块<br>
+            4. 有偏差就用顶部工具条：<b>移动照片</b>缩放看细节 · <b>微调网格</b>整体挪 · <b>增删结果</b>逐格改<br>
+            <span class="sn">两块要在不同行不同列、相距越远越准；只把识别到的块标为已拼，不会动其它块。</span>
+          </div>
+        </div>
+        <div class="scan-nudge" id="scanNudge">
+          <button data-n="left">←</button>
+          <button data-n="up">↑</button>
+          <button data-n="down">↓</button>
+          <button data-n="right">→</button>
+          <button data-n="minus">缩小网格</button>
+          <button data-n="plus">放大网格</button>
+        </div>
+        <div style="flex:1"></div>
+        <button class="btn ok" id="bApplyScan" disabled>应用识别结果</button>
+        <button class="btn ghost sm" id="bRescan">重新标定</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 定位卡：找到点之后直接改这一块的状态 -->
+<div class="loccard" id="locCard">
+  <div class="lc-main">
+    <b id="lcNum">000</b>
+    <span id="lcInfo">A区 第1列 第1行</span>
+    <span class="lc-st" id="lcState">未拼</span>
+  </div>
+  <div class="lc-btns">
+    <button data-t="1">已拼</button>
+    <button data-t="3">待定</button>
+    <button data-t="2">进行中</button>
+    <button data-t="0">未拼</button>
+    <button class="lc-x" id="lcClose" aria-label="关闭">✕</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script type="module" src="/src/frontend/main.js"></script>
+</body>
+</html>
