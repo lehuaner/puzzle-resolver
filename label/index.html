@@ -132,6 +132,9 @@ input:focus{border-color:#3d6ea5;}
 
 <script src="ocr-templates.js"></script>
 <script src="ocr-core.js"></script>
+<!-- 全量标注数据快照（落库时自动生成；file:// 下可直接读，无需任何授权）。
+     不存在时 404 静默，历史走其它数据源。 -->
+<script src="labels-data.js"></script>
 <script>
 "use strict";
 /* ================= 拼图标注台 =================
@@ -204,8 +207,8 @@ async function setupPhoto(img, name, prefetched){
   pc.getContext("2d").drawImage(img,0,0,P.W,P.H);
   P.base=pc;
   ocrK=P.W/Math.round(img.width*Math.min(1,3072/Math.max(img.width,img.height)));
-  // 数据优先级：历史点击预取 > 落库目录文件 > 本机旧缓存
-  var saved=prefetched || await loadFromDir(name) || loadLocal(name);
+  // 数据优先级：历史点击预取 > 落库目录文件 > labels-data.js 快照 > 本机旧缓存
+  var saved=prefetched || await loadFromDir(name) || ALL_DATA[name] || loadLocal(name);
   P.pieces=[]; P.nextId=1; P.sel=-1;
   fitView();
   if(saved){ applyData(saved); toast("已恢复标注 "+saved.pieces.length+" 块"); renderAll(); }
@@ -793,6 +796,24 @@ function saveSoon(){
 function toLabelFn(name){
   return String(name).replace(/[\\/:*?"<>|]/g,"_").replace(/\.[^.]+$/,"")+".labels.json";
 }
+// 全量数据快照：labels-data.js（file:// 下 <script> 可直接读，读取无需任何授权）
+// 由落库写入时自动维护；页面启动时若存在则成为默认历史来源。
+var ALL_DATA = (typeof LABEL_DATA!=="undefined" && LABEL_DATA) ? LABEL_DATA : {};
+function snapshotJs(){
+  var head="/* 自动生成：全量标注数据快照（由标注台落库时维护）。请勿手改。 */\nvar LABEL_DATA="+JSON.stringify(ALL_DATA)+";";
+  return head;
+}
+async function writeSnapshot(){
+  if(!dirHandle) return;
+  try{
+    var p=await dirHandle.queryPermission({mode:"readwrite"});
+    if(p!=="granted") return;
+    var fh=await dirHandle.getFileHandle("labels-data.js",{create:true});
+    var w=await fh.createWritable();
+    await w.write(snapshotJs());
+    await w.close();
+  }catch(err){}
+}
 // 从落库目录读某照片的标注（无目录/无权限/无文件 → null）
 async function loadFromDir(name){
   if(!dirHandle) return null;
@@ -817,7 +838,8 @@ function histRow(name, d, src){
 }
 async function renderHist(){
   var rows=[];
-  // 主源：落库目录里的 *.labels.json
+  var seen={};
+  // 主源：落库目录里的 *.labels.json（最权威、最新）
   if(dirHandle){
     try{
       var p=await dirHandle.queryPermission({mode:"readwrite"});
@@ -830,12 +852,20 @@ async function renderHist(){
           try{
             var fh=await dirHandle.getFileHandle(names[i]);
             var d=JSON.parse(await (await fh.getFile()).text());
-            if(d.pieces) rows.push(histRow(d.photo||names[i].replace(/\.labels\.json$/i,""), d, "dir"));
+            if(d.pieces){
+              var nm=d.photo||names[i].replace(/\.labels\.json$/i,"");
+              rows.push(histRow(nm, d, "dir")); seen[nm]=true;
+            }
           }catch(err){}
         }
       }
     }catch(err){}
   }
+  // 次源：labels-data.js 快照（file:// 下无需授权即可见的默认历史）
+  Object.keys(ALL_DATA).forEach(function(nm){
+    if(seen[nm]||!ALL_DATA[nm].pieces) return;
+    rows.push(histRow(nm, ALL_DATA[nm], "dir")); seen[nm]=true;
+  });
   // 兜底：本机旧缓存（迁移前的数据）
   if(!rows.length){
     for(var k=0;k<localStorage.length;k++){
@@ -843,7 +873,7 @@ async function renderHist(){
       if(key&&key.indexOf(LS)===0){
         try{
           var d2=JSON.parse(localStorage.getItem(key));
-          if(d2.pieces) rows.push(histRow(key.slice(LS.length), d2, "local"));
+          if(d2.pieces){ rows.push(histRow(key.slice(LS.length), d2, "local")); seen[key.slice(LS.length)]=true; }
         }catch(err){}
       }
     }
@@ -866,31 +896,49 @@ $("hlist").addEventListener("click",async function(e){
         }catch(err){}
       }
       localStorage.removeItem(LS+del);
+      delete ALL_DATA[del];
+      writeSnapshot();
       renderHist();
     }
     return;
   }
   var el=e.target.closest?e.target.closest(".hi"):null; if(!el||!el.dataset.k) return;
   var name=el.dataset.k;
-  var d = el.dataset.src==="dir" ? await loadFromDir(name) : loadLocal(name);
+  var d = el.dataset.src==="dir" ? (await loadFromDir(name) || ALL_DATA[name]) : loadLocal(name);
   if(!d){ toast("历史数据损坏"); return; }
   if(P.name===name){
     applyData(d); renderAll(); $("hist").classList.remove("on"); toast("已载入 "+d.pieces.length+" 块");
     return;
   }
-  // 照片加载链：本机缓存 → 落库目录里的照片副本 → 让用户选一次（之后自动缓存）
+  // 照片加载链：本机缓存 → 落库目录里的照片副本 → 同目录 <img> 直读 → 让用户选一次
   var blob=await idbGet("img:"+name).catch(function(){ return null; });
   if(!blob) blob=await photoFromDir(name);
   if(blob){
     $("hist").classList.remove("on");
     loadPhotoBlob(blob, name, d);
   } else {
-    histPending=name; histPendingData=d;
-    $("hist").classList.remove("on");
-    toast("本机没有该照片缓存，请选择照片文件："+name,true);
-    $("fApply").click();
+    var im=await imgFromFolder(name);
+    if(im){
+      $("hist").classList.remove("on");
+      setupPhoto(im, name, d);
+    } else {
+      histPending=name; histPendingData=d;
+      $("hist").classList.remove("on");
+      toast("本机没有该照片缓存，请选择照片文件："+name,true);
+      $("fApply").click();
+    }
   }
 });
+// file:// 同目录直读（相对路径 img 不受 CORS 限制）。注意：此路径下 canvas
+// 可能被标记为污染，OCR 自动识别会静默失败（画框/改号不受影响）。
+function imgFromFolder(name){
+  return new Promise(function(res){
+    var im=new Image();
+    im.onload=function(){ res(im); };
+    im.onerror=function(){ res(null); };
+    im.src=encodeURI(name);
+  });
+}
 var histPendingData=null;
 $("fApply").addEventListener("change",function(e){
   var f=e.target.files&&e.target.files[0]; e.target.value="";
@@ -1036,6 +1084,8 @@ $("bDir").addEventListener("click",async function(){
     await idbSet("dirHandle",h);
     setDirDot("on");
     toast("已选择落库目录："+h.name+" · 每张图标注将自动保存为 .labels.json",true);
+    await rebuildSnapshotFromDir();
+    migrateLocal();
     persistPhoto(P.name);
   }catch(err){
     if(err&&err.name==="AbortError") return;
@@ -1056,7 +1106,8 @@ async function restoreDir(){
     var p=await h.queryPermission({mode:"readwrite"});
     setDirDot(p==="granted"?"on":"warn");
     if(p==="granted"){
-      migrateLocal();
+      await migrateLocal();
+      await rebuildSnapshotFromDir();
       persistPhoto(P.name);
     } else {
       $("bDir").classList.add("attn");
@@ -1095,15 +1146,43 @@ async function migrateLocal(){
     if(moved) toast("已把 "+moved+" 条本机历史迁移到落库目录",true);
   }catch(err){}
 }
+// 把目录里已有的 *.labels.json 收进 ALL_DATA 并生成 labels-data.js 快照
+// （首次连接目录时调用：此后 file:// 双击打开无需授权即可看到全部历史）
+async function rebuildSnapshotFromDir(){
+  if(!dirHandle) return;
+  try{
+    var p=await dirHandle.queryPermission({mode:"readwrite"});
+    if(p!=="granted") return;
+    var names=[], changed=false;
+    for await (var entry of dirHandle.values()){
+      if(entry.kind==="file" && /\.labels\.json$/i.test(entry.name)) names.push(entry.name);
+    }
+    for(var i=0;i<names.length;i++){
+      try{
+        var d=JSON.parse(await (await (await dirHandle.getFileHandle(names[i])).getFile()).text());
+        if(!d.pieces) continue;
+        var nm=d.photo||names[i].replace(/\.labels\.json$/i,"");
+        if(!ALL_DATA[nm] || (d.updated||0)>(ALL_DATA[nm].updated||0)){ ALL_DATA[nm]=d; changed=true; }
+      }catch(err){}
+    }
+    await writeSnapshot();
+    if(changed) toast("已生成默认数据快照（labels-data.js）· 下次打开自动加载",true);
+  }catch(err){}
+}
 async function persistPhoto(name){
   if(!dirHandle||!name||!P.pieces.length) return;
   try{
     var p=await dirHandle.queryPermission({mode:"readwrite"});
     if(p!=="granted"){ setDirDot("warn"); return; }
+    var d=dataNow();
+    // 1) 单照片 json（外部管线/导出用）
     var fh=await dirHandle.getFileHandle(toLabelFn(name),{create:true});
     var w=await fh.createWritable();
-    await w.write(JSON.stringify(dataNow(),null,1));
+    await w.write(JSON.stringify(d,null,1));
     await w.close();
+    // 2) 全量快照 labels-data.js（file:// 双击打开时无需授权即可读回全部历史）
+    ALL_DATA[name]=d;
+    await writeSnapshot();
     setDirDot("on");
   }catch(err){
     setDirDot("warn");
