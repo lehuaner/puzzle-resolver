@@ -344,10 +344,10 @@ body.guideon .guidebar{display:flex}
 .gd-main:active b{transform:scale(.94)}
 .gd-main b{flex:0 0 auto;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   font-size:20px;font-weight:800;letter-spacing:-.02em;color:#ffe9a8}
-/* 编号信息让位：宽屏时它吃掉剩余宽度；窄屏（见下面的 media）换成独占一行并省略。
-   步数徽标不许被挤（以前它被按钮压掉半个「已放 N」） */
-.gd-main #gdInfo{flex:1 1 auto;min-width:0;font-size:12.5px;color:#a8b89c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.gd-step{flex:0 0 auto;margin-left:auto;font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:99px;
+/* 编号 + 步数占第一行，位置信息独占第二行并省略：
+   浮条最宽也就 560px，塞成一行时位置信息会被挤成「…」 */
+.gd-main #gdInfo{order:3;flex:1 1 100%;min-width:0;font-size:12.5px;color:#a8b89c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gd-step{order:2;flex:0 0 auto;margin-left:auto;font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:99px;
   background:#26301b;color:#c9d8b0;border:1px solid #44522f;white-space:nowrap}
 .gd-btns{display:flex;gap:7px;align-items:center}
 .gd-btns button{height:38px;padding:0 13px;border-radius:10px;background:#1b2415;
@@ -355,14 +355,14 @@ body.guideon .guidebar{display:flex}
 .gd-btns button:active{background:#28331d;transform:scale(.96)}
 .gd-btns .okb{background:#2e5c22;border-color:#5f9c3f;color:#e6ffd8}
 .gd-btns .gd-x{width:38px;padding:0;color:#8a9a76}
-/* 引导当前块：金色脉冲描边 */
-.cell.gcur{z-index:6}
-.cell.gcur::after{content:"";position:absolute;inset:-3px;border:3px solid var(--found);
-  border-radius:8px;animation:hlPulse 1.1s ease-in-out infinite;
-  filter:drop-shadow(0 0 7px rgba(255,212,94,.65));pointer-events:none}
-/* 引导里的「持续闪烁」：每 520ms 切一次 blinkOff，描边藏起来 = 硬闪一下，
-   比单纯脉冲更容易在满屏绿块里找到目标；点「放好了 / 跳过」才换下一个目标 */
-.cell.gcur.blinkOff::after{display:none}
+/* 引导当前目标：亮的那一相直接用图例「进行中」那套（绿底 + breath 呼吸闪） */
+.cell.gcur{z-index:6;overflow:visible}   /* 必须：否则下面那圈描边被 .cell 的 overflow:hidden 裁掉 */
+/* 位置钉住：一圈细绿描边，灭相也一直在，不会看着目标消失 */
+.cell.gcur::after{content:"";position:absolute;inset:-2px;border:2px solid rgba(120,255,190,.9);
+  border-radius:7px;pointer-events:none;box-shadow:0 0 10px rgba(90,255,170,.55)}
+.cell.gcur.gblink{background:var(--green);color:var(--green-ink);
+  animation:breath .95s ease-in-out infinite;
+  box-shadow:0 0 0 3px rgba(150,255,200,.95),0 0 22px 7px rgba(90,255,170,.6)}
 
 /* ---------- toast ---------- */
 #toast{position:fixed;left:50%;bottom:88px;transform:translate(-50%,16px);
@@ -439,7 +439,18 @@ body.guideon .guidebar{display:flex}
   .scan-bar button,.scan-bar .sdiv{flex:none}
   /* 提示气泡铺满整行宽度，同样的字数少折一半行数，少挡画面 */
   .scan-tip{left:8px;right:8px;transform:none;max-width:none;font-size:11px;padding:5px 9px;bottom:6px}
-  /* 引导浮条：编号 + 步数占第一行，位置信息独占第二行并省略（否则步数被按钮压掉半截） */
-  .gd-main #gdInfo{order:3;flex:1 1 100%}
-  .gd-step{order:2}
+}
+
+/* 引导浮条窄屏：按钮独占一整行，绝不压住左边的编号/步数
+   （以前 500 宽时 gd-main 只剩 139px，步数徽标被「跳过」按钮压掉半截） */
+@media (max-width:600px){
+  body.guideon .guidebar{display:grid;grid-template-columns:auto minmax(0,1fr);
+    grid-template-areas:"pic main" "btns btns";gap:8px 10px;padding:9px 10px 10px}
+  #gdPic{grid-area:pic;align-self:center}
+  .gd-main{grid-area:main;overflow:hidden}
+  .gd-btns{grid-area:btns;width:100%;gap:8px}
+  .gd-btns button{height:42px}
+  .gd-btns #gdSkip{flex:0 0 auto;min-width:68px}
+  .gd-btns .okb{flex:1 1 auto}
+  .gd-btns .gd-x{flex:0 0 44px;width:44px}
 }

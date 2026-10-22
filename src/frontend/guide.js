@@ -2,7 +2,7 @@ import { S } from "./store.js";
 import { $, toast, vibrate } from "./dom.js";
 import { fmt, idxToRC, zoneOf, zoneLetter } from "./coords.js";
 import { mainComp, promoteConnected } from "./grid.js";
-import { paint, afterChange, centerOnSet } from "./board.js";
+import { paint, afterChange, applyPan } from "./board.js";
 import { pushUndo } from "./interact.js";
 import { markChange } from "./sync.js";
 
@@ -10,34 +10,37 @@ import { markChange } from "./sync.js";
    「引导摆放」不再一次性把识别结果全铺到棋盘（那样一进引导就已经全绿了，
    引导本身没意义）。现在改成**逐条应用**：
      · 进引导时棋盘只有本来就拼好的块；
-     · 浮条逐条提示目标（单块，或 OCR 认出来的**整组算一条**），
-       目标块在棋盘上**持续闪烁**（整组就整组一起闪），直到用户点下一步；
-     · 「✓ 放好了」→ 这一条（单块/整组）才真正写进棋盘（没连主片区的标待定）；
+     · 浮条逐条提示目标：OCR 认出来的整组、或**编号上相邻能拼成一片的几块**算一条，
+       目标在棋盘上**持续闪**（亮的那一相就是图例里的「进行中」），直到用户点下一步；
+       同时按视口比例缩放居中，让目标占住屏幕的固定份额；
+     · 「✓ 放好了」→ 这一条才真正写进棋盘（没连主片区的标待定）；
      · 「跳过」→ 保持未拼，直接下一条；中途退出则没确认的都留在未拼。
    · 每条都带一张**照片小窗**，圈出目标块在刚识别的那张照片上的位置。
    状态放 S.guideActive（共享 store），避免与 interact.js 循环依赖；
    照片位置由 scan.js 通过 setGuideProviders 注入（避免 scan↔guide 循环 import）。 */
 
-var G={ q:[], k:0, cur:[], done:0, blinkT:null, off:false };
+var G={ q:[], k:0, cur:[], done:0, blinkT:null, on:false };
 
-/* 当前目标持续闪烁：每 520ms 在 .gcur 上切一次 .blinkOff（CSS 里把描边藏起来）。
-   单块闪一块、整组闪整组；点「放好了 / 跳过」后 showCur 会给新目标重新挂上。 */
+/* 当前目标持续闪烁：亮的那一相**就是图例里的「进行中」**（绿底呼吸闪 breath），
+   灭的那一相退回块本来的颜色，位置靠一直挂着的一圈绿色描边（.gcur::after）钉住。
+   单块闪一块、整片闪整片；点「放好了 / 跳过」后 showCur 会给新目标重新挂上。 */
 function startBlink(){
   stopBlink();
-  G.off=false;
+  G.on=true;
+  (G.cur||[]).forEach(function(i){ if(S.cells[i]) S.cells[i].classList.add("gblink"); });
   G.blinkT=setInterval(function(){
     if(!S.guideActive){ stopBlink(); return; }
-    G.off=!G.off;
+    G.on=!G.on;
     (G.cur||[]).forEach(function(i){
       var el=S.cells[i]; if(!el) return;
-      if(G.off) el.classList.add("blinkOff"); else el.classList.remove("blinkOff");
+      if(G.on) el.classList.add("gblink"); else el.classList.remove("gblink");
     });
-  }, 520);
+  }, 620);
 }
 function stopBlink(){
   if(G.blinkT){ clearInterval(G.blinkT); G.blinkT=null; }
   (G.cur||[]).forEach(function(i){
-    var el=S.cells[i]; if(el) el.classList.remove("blinkOff");
+    var el=S.cells[i]; if(el) el.classList.remove("gblink");
   });
 }
 
@@ -50,8 +53,12 @@ function grpOfMap(){
   return {};
 }
 
-// 队列排序：单片「贴已拼区优先 + 到主片区质心由近到远」；
-// 成块组按组质心同样由近到远，整体排在单片之后（先把整图边缘接上再端整块）。
+/* 队列：
+   ①先把目标块按**网格 4 邻**并成「连片」——OCR 没认成一组、但编号上挨着的几块，
+     本来就是能拼成一整块的，一次引导整片，别东一块西一块地闪；
+   ②连片太大（>MAXC）就退回 OCR 组 / 单块，免得一次闪半个屏幕；
+   ③排序：贴已拼区的先 → 连片大的先 → 离已拼区质心近的先。 */
+var MAXC=9;
 function buildQueue(targets){
   var main=mainComp();
   var mc=0, mr=0;
@@ -64,23 +71,51 @@ function buildQueue(targets){
     if(i>=1 && i<=S.cfg.total && !seen.has(i)){ seen.add(i); uniq.push(i); }
   });
   var grpOf=grpOfMap();
-  var byGrp={}, singles=[];
+
+  // 并查集：目标块之间按网格 4 邻合并
+  var par={};
+  function find(a){ while(par[a]!==a){ par[a]=par[par[a]]; a=par[a]; } return a; }
+  uniq.forEach(function(i){ par[i]=i; });
+  var inSet=new Set(uniq);
   uniq.forEach(function(i){
-    var g=grpOf[i];
-    if(g!=null) (byGrp[g]=byGrp[g]||[]).push(i);
-    else singles.push(i);
+    (S.adj[i]||[]).forEach(function(j){ if(inSet.has(j)){ var a=find(i), b=find(j); if(a!==b) par[b]=a; } });
   });
+  var cl={};
+  uniq.forEach(function(i){ var r=find(i); (cl[r]=cl[r]||[]).push(i); });
+
   var items=[];
-  Object.keys(byGrp).forEach(function(g){
-    var ids=byGrp[g].slice().sort(function(a,b){ return a-b; });
-    if(ids.length>=2) items.push({ ids:ids, grp:+g, group:true });
-    else singles.push(ids[0]);
+  Object.keys(cl).forEach(function(r){
+    var ids=cl[r].sort(function(a,b){ return a-b; });
+    if(ids.length<=MAXC){
+      var gs={};
+      ids.forEach(function(i){ if(grpOf[i]!=null) gs[grpOf[i]]=1; });
+      var ks=Object.keys(gs);
+      items.push({ ids:ids,
+                   grp:(ks.length===1?+ks[0]:null),
+                   group:(ids.length>=2 && ks.length===1),   // 就是一个 OCR 拼好组
+                   merged:(ids.length>=2 && ks.length!==1) }); // 相邻块拼出来的连片
+    } else {
+      // 太大：按 OCR 组拆开，没组的单块各自一条
+      var byGrp={};
+      ids.forEach(function(i){
+        var g=grpOf[i];
+        if(g!=null) (byGrp[g]=byGrp[g]||[]).push(i);
+        else items.push({ ids:[i], grp:null, group:false });
+      });
+      Object.keys(byGrp).forEach(function(g){
+        var a=byGrp[g].sort(function(x,y){ return x-y; });
+        items.push({ ids:a, grp:+g, group:a.length>=2 });
+      });
+    }
   });
-  function attached(i){
-    var nb=S.adj[i]||[];
-    for(var k=0;k<nb.length;k++){
-      var st=S.states[nb[k]];
-      if(st===1||st===3||st===4) return true;
+
+  function attached(ids){
+    for(var k=0;k<ids.length;k++){
+      var nb=S.adj[ids[k]]||[];
+      for(var j=0;j<nb.length;j++){
+        var st=S.states[nb[j]];
+        if(st===1||st===3||st===4) return true;
+      }
     }
     return false;
   }
@@ -90,25 +125,52 @@ function buildQueue(targets){
     ids.forEach(function(i){ var p=idxToRC(i); c+=p.col; r+=p.row; });
     return Math.hypot(c/ids.length-mc, r/ids.length-mr);
   }
-  var singleItems=singles.map(function(i){
-    return { ids:[i], grp:null, group:false,
-             score:(attached(i)?0:1000)+centroidDist([i]) };
+  items.forEach(function(it){
+    it.att=attached(it.ids);
+    it.n=it.ids.length;
+    it.dist=centroidDist(it.ids);
+    it.head=it.ids[0];        // 编号最小的一块：棋盘还空时拿它当「从上往下、从左往右」的次序
   });
-  items.forEach(function(it){ it.score=centroidDist(it.ids); });
-  singleItems.sort(function(a,b){ return a.score-b.score; });
-  items.sort(function(a,b){ return a.score-b.score; });
-  return singleItems.concat(items);          // 先离整图近的，再成块组
+  items.sort(function(a,b){
+    if(a.att!==b.att) return a.att?-1:1;      // 先把已经能接上的放完
+    if(a.n!==b.n) return b.n-a.n;              // 能整片放的优先（别东一块西一块）
+    if(a.dist!==b.dist) return a.dist-b.dist;
+    return a.head-b.head;
+  });
+  return items;
 }
 
-// 当前块不在视口内（留 90px 边距）才平移，避免每步都大幅跳动
-function ensureVisible(ids){
-  var c=0, r=0;
-  ids.forEach(function(i){ var p=idxToRC(i); c+=p.col; r+=p.row; });
-  c/=ids.length; r/=ids.length;
-  var x=((c-1)*S.step+S.cellSize/2)*S.scale+S.tx;
-  var y=((r-1)*S.step+S.cellSize/2)*S.scale+S.ty;
-  var W=S.wrap.clientWidth, H=S.wrap.clientHeight, m=90;
-  if(x<m||y<m||x>W-m||y>H-m) centerOnSet(ids,true);
+/* 目标缩放：让这一片在屏幕上**按比例**占住一个稳定的位置——
+   长短边都塞进「可视区短边的 42%」，单块再放大一点（1.0~2.6 之间夹住），
+   然后居中到**没被浮条盖住的那块可视区**。这样单块不会只剩一个小点、
+   整片也不会撑出屏幕外；目标也不会被底部浮条压到。 */
+function focusItem(ids){
+  var W=S.wrap.clientWidth, H=S.wrap.clientHeight;
+  if(!W||!H) return;
+  var p=idxToRC(ids[0]);
+  var minC=p.col, maxC=p.col, minR=p.row, maxR=p.row;
+  ids.forEach(function(i){
+    var q=idxToRC(i);
+    if(q.col<minC) minC=q.col; if(q.col>maxC) maxC=q.col;
+    if(q.row<minR) minR=q.row; if(q.row>maxR) maxR=q.row;
+  });
+  // 浮条压在画面底部：把「可视高度」扣掉被盖住的那截，目标居中到剩下的区域
+  var visH=H, gb=$("guideBar");
+  try{
+    if(gb && gb.getBoundingClientRect){
+      var wr=S.wrap.getBoundingClientRect(), br=gb.getBoundingClientRect();
+      var cover=wr.bottom-br.top;
+      if(cover>0) visH=Math.max(H*0.45, H-Math.min(cover,H*0.55));
+    }
+  }catch(err){}
+  var bw=(maxC-minC)*S.step+S.cellSize, bh=(maxR-minR)*S.step+S.cellSize;
+  var box=Math.min(W, visH)*0.42;
+  var s=Math.min(box/bw, box/bh);
+  s=Math.max(0.55, Math.min(2.6, s));   // 单块放大到 2.6 封顶，整片最多缩到 0.55（再小字就看不清）
+  S.scale=s;
+  var cx=((minC-1)*S.step+bw/2)*s, cy=((minR-1)*S.step+bh/2)*s;
+  S.tx=W/2-cx; S.ty=visH/2-cy;
+  applyPan(true);
 }
 
 /* 浮条左边的照片小窗：把目标块（组）在**刚识别的那张照片**上的位置圈出来 */
@@ -123,7 +185,7 @@ function clearGcur(){
   stopBlink();
   (G.cur||[]).forEach(function(i){
     var el=S.cells[i]; if(!el) return;
-    el.classList.remove("gcur"); el.classList.remove("blinkOff");
+    el.classList.remove("gcur"); el.classList.remove("gblink");
   });
 }
 
@@ -138,13 +200,14 @@ function showCur(){
     $("gdNum").textContent=fmt(i0);
     $("gdInfo").textContent=zoneLetter(zoneOf(i0))+"区 第"+p.col+"列 第"+p.row+"行";
   } else {
-    $("gdNum").textContent="组"+(it.grp!=null?(it.grp+1):"")+"·"+it.ids.length+"块";
-    $("gdInfo").textContent="整组一起放："+it.ids.slice(0,4).map(fmt).join("·")
-      +(it.ids.length>4?"…":"");
+    var tag = it.group ? ("组"+(it.grp+1)) : "连片";
+    $("gdNum").textContent=tag+"·"+it.ids.length+"块";
+    $("gdInfo").textContent=(it.group?"整组一起放：":"这些挨着放：")
+      +it.ids.slice(0,4).map(fmt).join("·")+(it.ids.length>4?"…":"");
   }
   $("gdStep").textContent=(G.k+1)+"/"+G.q.length+(G.done?" · 已放 "+G.done:"");
   drawPhoto(it.ids);
-  ensureVisible(it.ids);
+  focusItem(it.ids);                  // 按视口比例缩放 + 居中，突出目标
   startBlink();                       // 闪到用户点下一步为止
 }
 
@@ -213,9 +276,9 @@ export function startGuide(targets){
   S.guideActive=true;
   document.body.classList.add("guideon");
   showCur();
-  var nG=q.filter(function(it){ return it.group; }).length;
-  toast("引导摆放 · "+q.length+" 条（先放离整图近的 "
-    +(q.length-nG)+" 块"+(nG?("，再 "+nG+" 个成块组"):"")+"）· 放好一条才落一条");
+  var nMulti=q.filter(function(it){ return it.ids.length>1; }).length;
+  toast("引导摆放 · "+q.length+" 条（接上已拼区的先放，能挨成一片的 "
+    +(nMulti||0)+" 条整片放）· 放好一条才落一条");
 }
 
 export function guideExit(){
