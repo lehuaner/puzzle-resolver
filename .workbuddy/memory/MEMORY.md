@@ -5,10 +5,12 @@
 - 架构：ESM 模块 + 共享状态 `S`（store.js，活绑定不能跨模块赋值，import {S} 后读写属性）；编号八组合（origin tl/tr/bl/br × order col/row）；5 态（0 灰/1 绿/2 绿闪/3 待定黄/4 孤片浅黄）；4 邻接 BFS 连通域，待定→完成单向自动晋升；WS 实时同步 + 图谱管理 + 即时落库。
 - 图片识别：Otsu + 连通域(>1.2%) + 两点标定 + 圆形采样前景率>0.55；**支持拼放方向旋转 90°**（solveScan 按方形度 |log(|px|/|py|)| 自动选轴向，微调条「⟳ 转向」手动兜底）；应用结果后主界面自动包络盒居中（centerOnSet，只缩不放）+ 区域外沿金色描边（flashRegion，共边不画、9s 清除）。
 - **OCR 编号识别（v11）**：`ocr-templates.js`（15 类×≤20 样本×768 hex 软位图）+ `study/` 离线管线（`_ocr_lib.py` 字形库 / `_gen_cands.py` 候选生成 / `_build_atlas.py` 构建器，`_labels.json` 人工种子标注、`_cands.json` 中间数据同在 study/，脚本已 chdir 项目根，从任意位置可跑）；字形正立化=组件墨迹 bbox 宽高比（h≥1.12w 竖直/反之水平，勿用 PCA——半暗阴影带会拉偏）；提取时屏蔽同候选其他组件掩膜像素（bgv=235）；4 假设 F+/B+/R+/F- 匹配，dash 在 index1；全库自洽 100%（LOO 低是单样本类稀疏非算法缺陷）；编号格式 L-ddd（n=5 带 dash）或 Lddd（n=4）。
-- **扫描引导（v12）**：照片载入自动 OCR→`autoCalibrate`（conf 前 8 挑最远对）；散块模式（ocr.map≥2）下 OCR 编号即「已拼」证据（conf≥0.5），网格框淡化+编号标注（conf 着色）；「应用并引导摆放」→ guide.js 队列（贴已拼区先、按主片质心距离近到远），底部浮条 gdOk（标1+promote）/gdSkip/Esc，gcur 金色脉冲高亮，与批量互斥（S.guideActive 存 store 防循环依赖）。
+- **扫描引导（v12）**：照片载入自动 OCR→`autoCalibrate`（v15 起为全局自洽选锚点，见下）；散块模式（ocr.map≥2）下 OCR 编号即「已拼」证据（conf≥0.5），网格框淡化+编号标注（conf 着色）；「应用并引导摆放」→ guide.js 队列（贴已拼区先、按主片质心距离近到远），底部浮条 gdOk（标1+promote）/gdSkip/Esc，gcur 金色脉冲高亮，与批量互斥（S.guideActive 存 store 防循环依赖）。
 - **拼好组机制（v13，655ce71，scan.js recalcScan 散块分支）**：散块照片上网格映射与片子实际摆放**无关**（85891 实测残差 10+ 格距，autoCalibrate 解出的 pitch 是 garbage）——拼合判定全部用 OCR 工作坐标：距离∈[0.7,1.5]×minSide（片宽=文本行投影长/0.27）+ 文本平行（读数 `ang`=comps 行方向，**无 90° 歧义**，mod180<20°）+ 相对向量沿轴（axial=max(|cosψ|,|sinψ|)，对 90° 旋转不变）≥0.65；编号网格校验 4 邻**或对角**（角贴合法）→并查集成组（8 色轮渲染于读数实际位置+右侧面板明细）；axial≥0.8 且网格对不上→红框可疑（拼错/误读），0.65~0.8 灰区不标记。E2E 验证法：`label/85891.labels.json` 人工框×0.75 合成读数注入 `scan.ocr.map`→微调按钮触发 recalcScan，4 组（含 13 片大簇）精确复现。
 - **PP-OCR 服务接入（v13.5，7423565）**：主界面扫描照片载入时优先调标注台同款服务（127.0.0.1:8849，服务端带 CORS；侧栏徽标探测），失败/空回退内置模板；2×2 重叠分片 6%（整图 det 字符过小必漏）；svc 框角有 90° 歧义（det 点序随框姿态翻转）→ 拼合判据对含 svc 读数的对按轴系折叠(mod90)，模板对保持 mod180；svc 读数合成 comps（沿 ang 跨 0.675×tl）。读数标注带「方向针」（沿文本方向带箭头，conf≥0.5）。**rapidocr 3.9.2 大坑：同一实例调一次 use_det=False 后全管线永久退化成单行垃圾**——ocr_server.py 已双引擎隔离（get_ocr 只全管线 / get_rec 只 rec-only），改 warmup 或 fallback 逻辑后必须重启服务进程。
-- **组内两点标定推算（v13.6，4b4402e）**：拼好组成组后，对组内已验证配对 (网格Δ, 照片Δ) 最小二乘解**局部网格基**，退化(det)/残差(>0.35×side)检查后对成员 bbox ±2 圈推算：无读数+前景>0.5 → 推算块（蓝色框+编号，编号由绝对网格唯一确定），有读数但离预测位 >0.55×side → 误读红标（OCR 双向复核）。**两遍可疑**：簇贴簇（两端都在多成员组）不标疑，一端多组只标孤片端。E2E：85891 识别 106=93 读+13 推算（含 773/774、13 片大簇全部漏读成员），可疑 16→7。
+- **组内两点标定推算（v13.6+v14，4b4402e→64479c3）**：拼好组对组内已验证配对 (网格Δ,照片Δ) 最小二乘解局部网格基（退化/残差>0.35×side 检查），从成员**正贴邻格**沿前景蔓延推算（多轮 pass 到收敛）：过四道关才推——①贴邻（4 邻=同组成员读数或本组已推算格）②接缝（与锚点连线中点窗 maskWhite≥0.35；读数位是文字中心≠片心，真拼合可低至 0.39）③片心（中心窗≥0.85）④占位（预测位被其他编号读数占 <0.55×side→外簇的片不推不标）。无读数→推算蓝框（编号由绝对网格唯一确定）；occ 空而同号读数远→误读红标。**关键认知：旧 mask 有连通域过滤（<1.2% 面积清零），孤立散片在 mask 上是空的——bbox±2 全环外推在散堆里必被凸头/地板/外簇标名片骗过**（85891 实测 17 推 16 错；旧基线 13 推里 720/745/770 也错，位置上是 A-017/018/019 真片）。两遍可疑：簇贴簇不标疑。
+- **整块模式（v13.7，27f70ea）**：读数与全局网格映射中位残差<0.5 格距→blockMode（散块残差 10+ 格距物理不可能误判）：BFS 从对齐读数沿前景蔓延推算+簇级 OCR 支持检查（推算簇内 1.0 格距内有任何 conf 读数的格占比≥25%，杀光斑）；对齐读数统一画网格位+blockAng（2θ 向量均值）→排列整齐；灰格只画手动标定模式。85889：318=277 读+47 推算。
+- **自动重标 + 手动保留 OCR（v15，25589bc）**：`autoCalibrate` 不再挑"最远对"，改为**全局自洽打分**——conf 前 12 读数两两组合 × 两朝向(rot 0/1)，各自用该对解出的网格解释**全量读数**，取**残差中位数最小**的一对（等价"人眼挑两块最可信的片对齐"，与照片内容无关→换图零调参）。朝向由全局一致性直选，anchors=读数中心（不是片心）。`resetScan(keepImg,keepOcr)`：「重新标定」=保 OCR 自动重标（85889 318→318 无回归），**Shift/Alt+点击=手动点两块**（同样保 OCR）。**关键教训：手动标定它不是另一条算法，只是换锚点**——旧 resetScan 清 scan.ocr 会让手动落到纯前景网格分支、绕过整块模式的簇级 OCR 支持检查，这正是用户"手动标定只有光斑区错"的根因。修后手动 801/11 → 319=278+48、可疑 12、光斑区无框。
 - DOM 坑：`classList.add()` 不接受含空格字符串（抛 SyntaxError），多 token 必须逐个 add。
 
 ## 标定几何要点
@@ -21,7 +23,7 @@
 - **bat 双击闪退坑（已修 960dd2c）**：bat 含 UTF-8 中文（echo/路径）+ chcp 65001 会触发 cmd 解析错位（行被截断如 `'xe' 不是命令`、路径找不到）→ 闪退。规则：**bat 一律纯 ASCII**，中文路径用 `%USERPROFILE%` 等环境变量引用（运行时展开不经过文件字节解析）。
 - **file:// 单页工具**：经典 `<script src>` 相对路径在 file:// 下可加载（ESM module/fetch 才被 CORS 拦）；照片经 input file → URL.createObjectURL → canvas 不污染，可直接 getImageData。
 - **canvas 坑**：`cv.width=...` 赋相同值也会清空内容——layout 类函数须 `if(cv.width!==W)` 守卫，否则缩放后黑屏。
-- 识别流程 E2E：页面须同源 fetch 照片，`new DataTransfer()` 给 `#fImg` 设 files 再 dispatch change；锚点用 PointerEvent 派发到 scanStage（pointerId 勿残留，否则误进 pinch 分支，调试先 reload）。
+- 识别流程 E2E：页面须同源 fetch 照片，`new DataTransfer()` 给 `#fImg` 设 files 再 dispatch change；锚点用 PointerEvent 派发到 scanStage（pointerId 勿残留，否则误进 pinch 分支，调试先 reload）。**必须先点 #bScan 开扫描页再载图**——否则 osvcProbe 未跑→OSVC.ok=false→静默回退内置模板 OCR（读数骤减，误判成回归）；现已模块加载即探测兜底。
 - canvas 取证：toDataURL 超限自动落 `.workbuddy/projects/**/tool-results/*.txt` → venv python 正则解码落盘 → Read 看图。
 - venv：`~/.workbuddy/binaries/python/envs/default/Scripts/python.exe`（Windows 是 Scripts/ 不是 bin/），Pillow 已装。
 - 杀服务用 PID（netstat -ano | grep :8848），勿 taskkill //IM node.exe（会连 chrome-devtools MCP 一起杀）。
