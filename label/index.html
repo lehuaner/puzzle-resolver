@@ -91,6 +91,7 @@ input:focus{border-color:#3d6ea5;}
 <div id="bar">
   <button id="bOpen">📁 打开照片</button>
   <button id="bAuto">⚡ 自动标注</button>
+  <button id="bGrp" title="按编号+位置+方向识别相互贴合的拼好块群，同组染同色">🧩 拼好</button>
   <button id="bExport" class="pri">⬇ 导出 JSON</button>
   <button id="bImport">⬆ 导入</button>
   <button id="bDir">💾 落库目录</button>
@@ -592,126 +593,8 @@ async function doAutoLabel(){
     }
     // 已有人工确认的块保留不动
     var keep=P.pieces.filter(function(p){ return p.src==="manual"; });
-    // 第 4 层：距离变换找块心——拼好的亮域里，块心=离块边缘最远的点（峰值），
-    // 与人工框的质量完全无关（用户框偏小/偏位时邻位推算会系统性歪斜，实测）。
-    // 峰点=候选块心：峰间距中位=真实块距（自适应，替代失真的 avgSide）；
-    // 距已有框 >0.5×块距的峰点是漏标块：补扫读出完整编号（字母+数字）按实际
-    // conf 写入（低 conf 合法），读不出只建空占位框（label=""）待人工输入。
-    if(viaSvc){
-      var gc=document.createElement("canvas"); gc.width=P.W; gc.height=P.H;
-      var gcx=gc.getContext("2d",{willReadFrequently:true});
-      gcx.drawImage(P.img,0,0,P.W,P.H);
-      var gd=gcx.getImageData(0,0,P.W,P.H).data, gn=P.W*P.H;
-      var gray4=new Float32Array(gn);
-      var hist4=new Array(256).fill(0);
-      for(var gi=0,p4=0;gi<gn;gi++,p4+=4){
-        var v4=(gd[p4]*.299+gd[p4+1]*.587+gd[p4+2]*.114)|0;
-        gray4[gi]=v4; hist4[v4]++;
-      }
-      var thr4=otsuOf(hist4,gn);
-      // chamfer 3-4 距离变换（两遍扫描），只算 Otsu 前景
-      var D4=new Float32Array(gn);
-      var INF4=1e9;
-      for(var di=0;di<gn;di++) D4[di]=gray4[di]>thr4?INF4:0;
-      for(var dy=0;dy<P.H;dy++)for(var dx=0;dx<P.W;dx++){
-        var ii=dy*P.W+dx; if(D4[ii]===0) continue;
-        var m=D4[ii];
-        if(dx>0&&D4[ii-1]+1<m) m=D4[ii-1]+1;
-        if(dy>0&&D4[ii-P.W]+1<m) m=D4[ii-P.W]+1;
-        if(dx>0&&dy>0&&D4[ii-P.W-1]+1.414<m) m=D4[ii-P.W-1]+1.414;
-        if(dx<P.W-1&&dy>0&&D4[ii-P.W+1]+1.414<m) m=D4[ii-P.W+1]+1.414;
-        D4[ii]=m;
-      }
-      for(var dy2=P.H-1;dy2>=0;dy2--)for(var dx2=P.W-1;dx2>=0;dx2--){
-        var ii2=dy2*P.W+dx2; if(D4[ii2]===0) continue;
-        var m2=D4[ii2];
-        if(dx2<P.W-1&&D4[ii2+1]+1<m2) m2=D4[ii2+1]+1;
-        if(dy2<P.H-1&&D4[ii2+P.W]+1<m2) m2=D4[ii2+P.W]+1;
-        if(dx2<P.W-1&&dy2<P.H-1&&D4[ii2+P.W+1]+1.414<m2) m2=D4[ii2+P.W+1]+1.414;
-        if(dx2>0&&dy2<P.H-1&&D4[ii2+P.W-1]+1.414<m2) m2=D4[ii2+P.W-1]+1.414;
-        D4[ii2]=m2;
-      }
-      // 峰点：域 AABB 内的局部极大（5×5）且深度达标
-      var minPeak=Math.max(10,avgSide*0.28);
-      var allB=keep.concat(fresh);
-      var peaks=[];
-      for(var bi5=0;bi5<boxes.length;bi5++){
-        var bb6=boxes[bi5].bbox;
-        for(var py2=bb6[1]+2;py2<bb6[1]+bb6[3]-2;py2++)
-          for(var px2=bb6[0]+2;px2<bb6[0]+bb6[2]-2;px2++){
-            var ii3=py2*P.W+px2, dv=D4[ii3];
-            if(dv<minPeak) continue;
-            if(D4[ii3-1]>dv||D4[ii3+1]>dv||D4[ii3-P.W]>dv||D4[ii3+P.W]>dv||
-               D4[ii3-P.W-1]>dv||D4[ii3-P.W+1]>dv||D4[ii3+P.W-1]>dv||D4[ii3+P.W+1]>dv) continue;
-            peaks.push({x:px2,y:py2,d:dv});
-          }
-      }
-      // 峰点去重：深度自适应。最深峰 ≈ 真块心的半块宽；块边缘/字隙浅峰（深度小、
-      // 距深峰近）按 0.7×最深峰深度的半径合并掉——半径小于邻块心距，不会误合并邻块
-      peaks.sort(function(a,b){ return b.d-a.d; });
-      var maxD4=peaks.length?peaks[0].d:0;
-      var dedupR=Math.max(avgSide*0.5, maxD4*0.7);
-      var pk=[];
-      for(var pi2=0;pi2<peaks.length;pi2++){
-        var pk2=peaks[pi2], dup2=false;
-        for(var qi4=0;qi4<pk.length;qi4++){
-          if(Math.hypot(pk[qi4].x-pk2.x,pk[qi4].y-pk2.y)<dedupR){ dup2=true; break; }
-        }
-        if(!dup2) pk.push(pk2);
-      }
-      // 真实块距：峰点最近邻距离的中位（用户框不可靠，块心自己说话）
-      var nn4=[];
-      for(var pi3=0;pi3<pk.length;pi3++){
-        var bd4=1e9;
-        for(var qi5=0;qi5<pk.length;qi5++){
-          if(pi3===qi5) continue;
-          var d9=Math.hypot(pk[pi3].x-pk[qi5].x, pk[pi3].y-pk[qi5].y);
-          if(d9<bd4) bd4=d9;
-        }
-        if(bd4<1e9) nn4.push(bd4);
-      }
-      nn4.sort(function(a,b){ return a-b; });
-      var pitch=(nn4.length>=4)?nn4[nn4.length>>1]:avgSide;
-      pitch=Math.max(30,Math.min(pitch, avgSide*3));
-      // 已覆盖判定：峰点即真块心，但人工框可能偏小/偏位（偏差可达半块宽）——
-      // 判定半径取 max(0.55×最近框宽, 0.55×新框宽)，保证新框与已有框有实质
-      // 重叠时一律视为已标（补扫的框绝不压到已有框上——用户明确要求）
-      function coversExisting(x,y,wNew){
-        for(var ki8=0;ki8<allB.length;ki8++){
-          var pb=allB[ki8].box;
-          if(Math.hypot(pb.cx-x,pb.cy-y)<Math.max(pb.w*0.55, wNew*0.55)) return true;
-        }
-        return false;
-      }
-      var made=0;
-      for(var pi4=0;pi4<pk.length;pi4++){
-        var pt2=pk[pi4];
-        if(coversExisting(pt2.x,pt2.y,pitch*0.92)) continue;   // 已有框覆盖
-        if(made>=12) break;              // 单轮兜底上限
-        var near10=1e9;
-        for(var ki9=0;ki9<allB.length;ki9++){
-          var d11=Math.hypot(allB[ki9].box.cx-pt2.x, allB[ki9].box.cy-pt2.y);
-          if(d11<near10) near10=d11;
-        }
-        var b6=null;
-        try{ b6=await svcOcrRoi({ box:{cx:pt2.x,cy:pt2.y,w:pitch*0.92,h:pitch*0.92,ang:0} }); }catch(err){}
-        if(b6&&b6.letter){
-          var lab6=b6.letter+"-"+b6.digits;
-          var rep=allB.some(function(p){ return p.label===lab6; });
-          // 编号写入复核：距最近框过近时读到的必是邻块编号（ROI 切入）
-          if(!rep&&near10>=pitch*0.45){
-            rescanned++;
-            allB.push({box:{cx:pt2.x,cy:pt2.y,w:pitch*0.92,h:pitch*0.92,ang:0}, label:lab6});
-            fresh.push(mkPiece(mkRot(pt2.x,pt2.y,pitch*0.92,pitch*0.92,norm90(b6.angOff||0)),b6));
-            made++; continue;
-          }
-        }
-        // 读不出/编号重复/位置过近：只建空占位框（不写编号），交人工处理
-        fresh.push(mkPiece(mkRot(pt2.x,pt2.y,pitch*0.92,pitch*0.92,0), null));
-        made++;
-      }
-    }
     P.pieces=keep.concat(fresh);
+    P.showGroups=false; P.groups=null; P.gmap=null;   // 块 id 已重建，拼好标记失效
     renderAll();
     var numd=fresh.filter(function(p){ return p.label; }).length;
     var empt=fresh.length-numd;
@@ -728,6 +611,63 @@ function keepBoxesOverlap(bb){
   });
 }
 $("bAuto").addEventListener("click",autoLabel);
+
+/* ================= 拼好识别 ================= */
+// 依照已识别的编号 + 框像素位置 + 方向，推断相互贴合的「拼好」块群：
+//   ① 同区字母（拼好区域编号同字母；跨区边界块罕见，宁可漏判不误判）
+//   ② 方向一致（印刷主轴 norm90 折叠后差 <20°——拼好的块朝向相同）
+//   ③ 相邻贴合：中心距 ∈ [0.75,1.3]×较小框宽，且相对向量沿块轴向（局部坐标主轴占比 ≥0.8）
+// 满足者 union-find 连通，≥2 块的连通分量 = 一个拼好组。
+function detectAssembled(){
+  var items=P.pieces.filter(function(p){ return p.label && /^[A-Da-d]/.test(p.label); });
+  var n=items.length, par=[];
+  for(var i=0;i<n;i++) par.push(i);
+  function find(x){ while(par[x]!==x){ par[x]=par[par[x]]; x=par[x]; } return x; }
+  for(var i2=0;i2<n;i2++)for(var j=i2+1;j<n;j++){
+    var A=items[i2], B=items[j];
+    if(A.label[0].toUpperCase()!==B.label[0].toUpperCase()) continue;
+    var aA=norm90(A.box.ang), aB=norm90(B.box.ang);
+    var dd=Math.abs(aA-aB); if(dd>Math.PI/4) dd=Math.PI/2-dd;
+    if(dd>20*Math.PI/180) continue;
+    var dx=B.box.cx-A.box.cx, dy=B.box.cy-A.box.cy, dist=Math.hypot(dx,dy);
+    var w=Math.min(A.box.w,B.box.w);
+    if(dist<w*0.75||dist>w*1.3) continue;
+    var ca=Math.cos(-A.box.ang), sa=Math.sin(-A.box.ang);
+    var lx=Math.abs(dx*ca-dy*sa), ly=Math.abs(dx*sa+dy*ca);
+    if(Math.max(lx,ly)/dist<0.8) continue;
+    var ra=find(i2), rb=find(j);
+    if(ra!==rb) par[rb]=ra;
+  }
+  var by={}, order=[];
+  for(var i3=0;i3<n;i3++){
+    var r=find(i3);
+    if(!by[r]){ by[r]=[]; order.push(r); }
+    by[r].push(items[i3]);
+  }
+  return order.map(function(k){ return by[k]; })
+              .filter(function(g){ return g.length>=2; });
+}
+var GRP_COLORS=["rgba(255,196,64,.16)","rgba(64,196,255,.16)","rgba(120,235,120,.16)",
+                "rgba(255,110,160,.16)","rgba(180,130,255,.16)","rgba(90,220,200,.16)",
+                "rgba(235,160,90,.16)","rgba(160,190,90,.16)"];
+$("bGrp").addEventListener("click",function(){
+  if(P.showGroups){
+    P.showGroups=false; P.groups=null; P.gmap=null;
+    toast("已关闭拼好标记");
+  } else {
+    var g=detectAssembled();
+    P.groups=g; P.showGroups=true;
+    P.gmap={};
+    g.forEach(function(grp,gi){
+      grp.forEach(function(p){ P.gmap[p.id]=gi%GRP_COLORS.length; });
+    });
+    var mx=0; g.forEach(function(x){ if(x.length>mx) mx=x.length; });
+    var tot=g.reduce(function(s,x){ return s+x.length; },0);
+    toast(g.length?("拼好 "+g.length+" 组（共 "+tot+" 块，最大组 "+mx+" 块），同组已染同色")
+                  :"未发现拼好的块群（需要 ≥2 块方向一致且相邻贴合）");
+  }
+  renderAll();
+});
 
 /* ================= 视图 ================= */
 function fitView(){
@@ -825,6 +765,11 @@ function drawPiece(p,i,sel,dim){        // dim=有其他框被选中：未确认
   ctx.save();
   ctx.translate(b.cx,b.cy);
   ctx.rotate(b.ang);
+  // 拼好组染色：同组块底色相同，一眼看出版图
+  if(P.showGroups&&P.gmap&&P.gmap[p.id]!=null){
+    ctx.fillStyle=GRP_COLORS[P.gmap[p.id]];
+    ctx.fillRect(-b.w/2,-b.h/2,b.w,b.h);
+  }
   ctx.strokeStyle=col;
   ctx.lineWidth=sel?Math.max(3,P.W/400):Math.max(1.6,P.W/800);
   if(sel){ ctx.shadowColor="rgba(255,212,94,.8)"; ctx.shadowBlur=10; }
@@ -1239,10 +1184,17 @@ function workBox(b){                      // 原图像素 → 工作分辨率
   return { cx:b.cx*k, cy:b.cy*k, w:b.w*k, h:b.h*k, ang:b.ang||0 };
 }
 function dataNow(){
-  return { version:2, photo:P.name, width:P.ow, height:P.oh, updated:Date.now(),
+  var d={ version:2, photo:P.name, width:P.ow, height:P.oh, updated:Date.now(),
     pieces:P.pieces.map(function(p){
       return { box:origBox(p.box), label:p.label, conf:Math.round(p.conf*100)/100, src:p.src };
     }) };
+  // 拼好识别结果随导出携带（按 label 列表，id 不持久化）
+  if(P.showGroups&&P.groups&&P.groups.length){
+    d.groups=P.groups.map(function(g){
+      return g.map(function(p){ return p.label; });
+    });
+  }
+  return d;
 }
 function applyData(d){
   P.ow=d.width||P.ow; P.oh=d.height||P.oh;
@@ -1257,6 +1209,7 @@ function applyData(d){
              conf:p.conf||0, src:p.src||"auto" };
   });
   P.sel=-1; $("edbar").classList.remove("on");
+  P.showGroups=false; P.groups=null; P.gmap=null;   // 换数据重置拼好标记
 }
 function workBBoxArr(b){
   var k=P.W/P.ow;
