@@ -325,7 +325,7 @@ function drawScanGrid(){
       scanCtx.strokeRect(x-bw/2,y-bh/2,bw,bh);
     }
   }
-  // 散块模式：已拼结果框画在片子的实际照片位置（读数处），拼好组按组着色
+  // 散块模式：已拼结果框画在片子的实际照片位置（读数处），按文字方向旋转，拼好组按组着色
   if(ocrMode && scan.reads && scan.result){
     var k2=scan.W/scan.ocr.w;
     scan.reads.forEach(function(rd){
@@ -335,13 +335,42 @@ function drawScanGrid(){
       var side=readingSide(rd)*k2;
       var susp=scan.suspIdx && scan.suspIdx.has(rd.idx);
       var gi=scan.grpMap ? scan.grpMap[rd.idx] : null;
+      scanCtx.save();
+      scanCtx.translate(x,y); scanCtx.rotate(rd.ang||0);   // 框随文字方向摆放
       scanCtx.fillStyle = susp ? "rgba(255,90,90,.30)"
         : gi!=null ? GRP_COLORS[gi%GRP_COLORS.length] : "rgba(40,230,120,.30)";
-      scanCtx.fillRect(x-side/2,y-side/2,side,side);
+      scanCtx.fillRect(-side/2,-side/2,side,side);
       scanCtx.strokeStyle = susp ? "rgba(255,80,80,.95)"
         : gi!=null ? GRP_COLORS[gi%GRP_COLORS.length].replace(".30",".95") : "rgba(60,255,140,.95)";
       scanCtx.lineWidth=Math.max(1.2,side*0.05);
-      scanCtx.strokeRect(x-side/2,y-side/2,side,side);
+      scanCtx.strokeRect(-side/2,-side/2,side,side);
+      scanCtx.restore();
+    });
+  }
+  // 拼好推算块：组内两点标定外推 + 前景证实 → 蓝框 + 蓝色编号
+  if(ocrMode && scan.inferredIdx && scan.inferredIdx.size){
+    var k3=scan.W/scan.ocr.w;
+    scan.inferredIdx.forEach(function(idx){
+      var ip=scan.inferredPos[idx]; if(!ip) return;
+      var x=ip.x*k3, y=ip.y*k3;
+      if(x<-60||y<-60||x>W+60||y>H+60) return;
+      var side=ip.side*k3;
+      scanCtx.save();
+      scanCtx.translate(x,y); scanCtx.rotate(ip.ang||0);
+      scanCtx.fillStyle="rgba(80,170,255,.30)";
+      scanCtx.fillRect(-side/2,-side/2,side,side);
+      scanCtx.strokeStyle="rgba(110,190,255,.95)";
+      scanCtx.lineWidth=Math.max(1.2,side*0.05);
+      scanCtx.strokeRect(-side/2,-side/2,side,side);
+      scanCtx.restore();
+      var label=zoneLetter(zoneOf(idx))+"-"+fmt(idx);
+      scanCtx.font="bold 15px monospace";
+      var tw2=scanCtx.measureText(label).width;
+      scanCtx.fillStyle="rgba(8,12,18,.72)";
+      scanCtx.fillRect(x-tw2/2-4, y-31, tw2+8, 18);
+      scanCtx.fillStyle="rgba(110,190,255,.95)";
+      scanCtx.textAlign="center"; scanCtx.textBaseline="middle";
+      scanCtx.fillText(label, x, y-22);
     });
   }
   // 散块模式：把读到的编号标在照片上（conf 着色）
@@ -415,10 +444,12 @@ function recalcScan(){
     });
     // —— 拼好组识别（编号 + 照片位置 + 文本方向）——
     // 散块照片上网格映射与片子实际摆放位置无关（残差可达十几个格距），
-    // 所以全部用 OCR 工作坐标 + 读数自带文本行角度判断「拼合相邻」：
-    //   距离≈一片宽(0.7~1.4×minSide) + 文本行平行(mod180 <20°) + 相对向量沿文本轴(≥0.8)。
-    // 拼合相邻的两块，编号必须是网格 4 邻格（主 app 网格绝对坐标）：
-    //   是 → 证实一组拼好（并查集合并）；否 → 拼错或编号误读，标红可疑。
+    // 拼合判定全部用 OCR 工作坐标 + 读数文本方向：
+    //   距离≈一片宽(0.7~1.5×minSide) + 文本轴平行(svc 框角按轴系折叠, <20°)
+    //   + 相对向量沿文本轴(≥0.65)。
+    // 拼合相邻的两块，编号须为网格 4 邻/对角（主 app 网格绝对坐标）：
+    //   是 → 并查集合并成组，并记「网格Δ×照片Δ」样本供组内两点标定；
+    //   否 → 先挂起，二筛定夺。
     var reads=[];
     scan.ocr.map.forEach(function(r,idx){
       if(r.conf<0.5||r.idx<1||r.idx>S.cfg.total) return;
@@ -428,12 +459,12 @@ function recalcScan(){
     var parent={};
     function find(x){ while(parent[x]!==x){ parent[x]=parent[parent[x]]; x=parent[x]; } return x; }
     reads.forEach(function(r){ parent[r.idx]=r.idx; });
-    var suspIdx=new Set(), suspPairs=[];
+    var vpairs=[], defSusp=[];
     for(var a=0;a<reads.length;a++)for(var b=a+1;b<reads.length;b++){
       var ra=reads[a], rb=reads[b];
       var d=Math.hypot(ra.x-rb.x, ra.y-rb.y);
       var side=Math.min(readingSide(ra), readingSide(rb));
-      if(d<side*0.7||d>side*1.5) continue;             // 不是一片宽的近邻（1.4≈对角贴片）
+      if(d<side*0.7||d>side*1.5) continue;             // 不是一片宽的近邻（1.41≈对角贴片）
       var dth=Math.abs(ra.ang-rb.ang)*180/Math.PI%180; if(dth>90) dth=180-dth;
       if(ra.svc||rb.svc){ if(dth>45) dth=90-dth; }     // PP-OCR 框角带 90° 歧义（det 点序），按轴系折叠
       if(dth>20) continue;                             // 文本轴不平行 → 不是同一簇
@@ -441,14 +472,14 @@ function recalcScan(){
       var axv=Math.max(Math.abs(Math.cos(psi)), Math.abs(Math.sin(psi)));
       if(axv<0.65) continue;                           // 相对向量明显偏离横/竖轴
       var pa=idxToRC(ra.idx), pb=idxToRC(rb.idx);
-      var dr=Math.abs(pa.row-pb.row), dc=Math.abs(pa.col-pb.col);
-      if((dr===1&&dc===0)||(dr===0&&dc===1)||(dr===1&&dc===1)){
+      var dr=pb.row-pa.row, dc=pb.col-pa.col;
+      if((Math.abs(dr)===1&&Math.abs(dc)===1)||(dr===0&&Math.abs(dc)===1)||(dc===0&&Math.abs(dr)===1)){
         var ra2=find(ra.idx), rb2=find(rb.idx);        // 4 邻或对角（角贴）都算拼合
         if(ra2!==rb2) parent[rb2]=ra2;
-      } else if(axv>=0.8){
-        suspIdx.add(ra.idx); suspIdx.add(rb.idx);      // 轴向对齐却编号对不上：拼错或误读
-        if(suspPairs.length<4) suspPairs.push(ra.idx+"+"+rb.idx);
-      }                                                // 灰区(0.65~0.8)巧合邻近不打扰
+        vpairs.push({a:ra.idx,b:rb.idx,dr:dr,dc:dc,dx:rb.x-ra.x,dy:rb.y-ra.y});
+      } else if(axv>=0.8 && d<=side*1.35){
+        defSusp.push([ra.idx,rb.idx]);                 // 疑似拼合但编号对不上
+      }
     }
     var byRoot={}, groups=[], grpMap={};
     reads.forEach(function(r){
@@ -460,12 +491,82 @@ function recalcScan(){
       if(m.length>=2){ m.sort(function(x,y){ return x-y; }); groups.push(m); }
     });
     groups.forEach(function(m,gi){ m.forEach(function(i){ grpMap[i]=gi; }); });
+    // 二筛：两块各自都已在多片组里 = 两个拼好簇挨着放而已，不算可疑
+    var suspIdx=new Set(), suspPairs=[];
+    function grpSizeOf(i){ var gi=grpMap[i]; return gi==null?1:groups[gi].length; }
+    defSusp.forEach(function(p){
+      var ga=grpSizeOf(p[0])>=2, gb=grpSizeOf(p[1])>=2;
+      if(ga&&gb) return;                               // 两簇相邻摆放，不算可疑
+      if(ga) suspIdx.add(p[1]);                        // 已验证组一侧无嫌疑，只标单块
+      else if(gb) suspIdx.add(p[0]);
+      else { suspIdx.add(p[0]); suspIdx.add(p[1]); }
+      if(suspPairs.length<4) suspPairs.push(p[0]+"+"+p[1]);
+    });
+    // —— 组内两点标定 → 大片范围推算 + OCR 复核 ——
+    // 每组用组内拼合对最小二乘解出局部网格基 (Vr,Vc)（两点定标的一般化），
+    // 外推成员包围盒±2 格的预测位置：前景在而无读数 → 该格编号由网格唯一
+    // 确定，直接推算入结果（蓝框）；有读数但离预测位很远 → 误读，标红。
+    var inferred=0, inferredIdx=new Set(), inferredPos={}, misread=0;
+    groups.forEach(function(members){
+      var gi=grpMap[members[0]];
+      var gp=vpairs.filter(function(p){ return grpMap[p.a]===gi; });
+      if(!gp.length) return;
+      var Sa=0,Sc=0,Sb=0,Bx=0,Cx=0,By=0,Cy=0;
+      gp.forEach(function(p){
+        Sa+=p.dr*p.dr; Sc+=p.dc*p.dc; Sb+=p.dr*p.dc;
+        Bx+=p.dr*p.dx; Cx+=p.dc*p.dx; By+=p.dr*p.dy; Cy+=p.dc*p.dy;
+      });
+      var det=Sa*Sc-Sb*Sb;
+      if(Math.abs(det)<0.5*(Sa+Sc)) return;            // 拼合对全在一条直线上，解不出两轴
+      var Vrx=(Bx*Sc-Sb*Cx)/det, Vcx=(Sa*Cx-Sb*Bx)/det;
+      var Vry=(By*Sc-Sb*Cy)/det, Vcy=(Sa*Cy-Sb*By)/det;
+      var maxRes=0;
+      gp.forEach(function(p){
+        maxRes=Math.max(maxRes, Math.hypot(p.dr*Vrx+p.dc*Vcx-p.dx, p.dr*Vry+p.dc*Vcy-p.dy));
+      });
+      var sides=members.map(function(i){ return readingSide(scan.ocr.map.get(i))||0; })
+        .filter(function(s){ return s>0; }).sort(function(x,y){ return x-y; });
+      var side=sides.length?sides[sides.length>>1]:0;
+      if(!side||maxRes>side*0.35) return;              // 残差过大 → 组内疑有误读，不外推
+      var seed=scan.ocr.map.get(members[0]);
+      var p0=idxToRC(members[0]);
+      var rmin=99,rmax=0,cmin=99,cmax=0;
+      members.forEach(function(i){
+        var rc=idxToRC(i);
+        rmin=Math.min(rmin,rc.row); rmax=Math.max(rmax,rc.row);
+        cmin=Math.min(cmin,rc.col); cmax=Math.max(cmax,rc.col);
+      });
+      rmin=Math.max(1,rmin-2); rmax=Math.min(S.rows,rmax+2);
+      cmin=Math.max(1,cmin-2); cmax=Math.min(S.cfg.cols,cmax+2);
+      var k=scan.W/scan.ocr.w, added=0;
+      for(var r=rmin;r<=rmax;r++)for(var c=cmin;c<=cmax;c++){
+        var idx=rcToIdx(r,c);                          // r/c 已夹在合法域内
+        if(idx<1||idx>S.cfg.total||inferredIdx.has(idx)) continue;
+        var px=seed.x+(r-p0.row)*Vrx+(c-p0.col)*Vcx;
+        var py=seed.y+(r-p0.row)*Vry+(c-p0.col)*Vcy;
+        if(px<side*0.35||py<side*0.35||px>scan.ocr.w-side*0.35||py>scan.ocr.h-side*0.35) continue;
+        if(samplePiece(px*k,py*k,side*k*0.28,side*k*0.28)<=0.5) continue;
+        var rd=scan.ocr.map.get(idx);
+        if(rd){
+          if(Math.hypot(rd.x-px,rd.y-py)>side*0.55){   // 有读数但不在网格位 → 误读
+            suspIdx.add(idx); misread++;
+            if(suspPairs.length<4) suspPairs.push(idx+"≠网格位");
+          }
+        } else {
+          set.add(idx); inferredIdx.add(idx); inferred++;
+          inferredPos[idx]={x:px,y:py,ang:seed.ang,side:side};
+          if(++added>12) return;                       // 单组外推上限，防映射意外扩散
+        }
+      }
+    });
     scan.reads=reads; scan.groups=groups; scan.grpMap=grpMap;
-    scan.suspIdx=suspPairs.length?suspIdx:null;
+    scan.suspIdx=suspIdx.size?suspIdx:null;
     scan.suspPairs=suspPairs;
+    scan.inferred=inferred; scan.inferredIdx=inferredIdx; scan.inferredPos=inferredPos;
   } else {
     scan.reads=null; scan.groups=null; scan.grpMap=null;
     scan.suspIdx=null; scan.suspPairs=null;
+    scan.inferred=0; scan.inferredIdx=null; scan.inferredPos=null;
     var rx=Math.abs(scan.pitchX)*0.26, ry=Math.abs(scan.pitchY)*0.26;
     for(var i=1;i<=S.cfg.total;i++){
       var p=idxToRC(i);
@@ -537,6 +638,7 @@ function scanTipText(){
   return "识别 "+(scan.result?scan.result.size:0)+" 块"
     +(scan.ocr&&scan.ocr.map.size>=2?" · 编号读取模式":"")
     +(scan.groups&&scan.groups.length?" · 拼好组 "+scan.groups.length:"")
+    +(scan.inferred?" · 拼好推算 "+scan.inferred:"")
     +(scan.suspIdx?(" · ⚠可疑 "+scan.suspIdx.size):"");
 }
 function scanCalTip(){
@@ -553,6 +655,7 @@ function resetScan(keepImg){
   scan.ocr=null; scan.ocrAuto=false;
   scan.reads=null; scan.groups=null; scan.grpMap=null;
   scan.suspIdx=null; scan.suspPairs=null;
+  scan.inferred=0; scan.inferredIdx=null; scan.inferredPos=null;
   scan.zoom=1; scan.ox=0; scan.oy=0;
   setScanMode("move");
   $("scanPick").classList.remove("on");
@@ -679,7 +782,7 @@ function autoCalibrate(okList){
   if(!scan.calibrated){ scan.anchors=[]; scan.ocrAuto=false; return false; }
   scanCalTip();
   $("scanStep").innerHTML="已自动识别并标定（读取到 <b>"+okList.length+"</b> 个编号）<br>"
-    +"<b>绿框</b>＝识别为已拼（画在片子实际位置） · 同色框＝<b>拼好组</b> · <b>红框</b>＝疑似拼错/误读<br>"
+    +"<b>绿框</b>＝识别为已拼（随文字方向摆放） · 同色框＝<b>拼好组</b> · <b>蓝框</b>＝组内推算 · <b>红框</b>＝疑似拼错/误读<br>"
     +"顶部工具条：<b>移动照片</b>查看细节 · <b>微调网格</b>整体挪动 · <b>增删结果</b>逐格修正<br>"
     +"<span class=\"sn\">相邻且编号方向一致的块自动归为拼好组；组内编号在网格上对不上时会标红提示。识别有误的编号可以直接在照片上核对；应用后可点「应用并引导摆放」逐块引导。</span>";
   return true;
