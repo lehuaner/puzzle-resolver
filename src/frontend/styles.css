@@ -200,7 +200,9 @@ body.batch .legend{display:none}
 .set-foot{display:flex;gap:10px;padding:14px 16px;border-top:1px solid var(--line);flex:none;flex-wrap:wrap}
 
 /* ---------- 识别 ---------- */
-.scan-body{flex:1;display:flex;min-height:0;overflow:hidden;height:min(74vh,660px)}
+/* flex:1 1 auto——basis 取 height 本身；若用 flex:1(basis:0)，
+   面板高度会退化成侧栏内容高度，stage 在上下布局里被压成 0 */
+.scan-body{flex:1 1 auto;display:flex;min-height:0;overflow:hidden;height:min(74vh,660px)}
 .scan-stage{flex:1;position:relative;background:#0a0f16;display:flex;
   align-items:center;justify-content:center;overflow:hidden;touch-action:none}
 #scanCanvas{position:absolute;left:0;top:0;display:block;border-radius:8px;
@@ -331,7 +333,22 @@ body.locon .loccard{display:flex}
   .hbtns .btn{padding:0 10px;font-size:12.5px;height:40px}
   .legend .hint{display:none}
   #mm{width:150px}
-  .scan-side{width:210px}
+  /* 移动端：识别面板右侧数据面板移到顶部，横向排布；
+     说明文字默认收起（顶栏「?」展开），工具条/微调键各占一行。
+     column-reverse：DOM 里 stage 在前（桌面要它在左），这里反转让数据栏到顶上 */
+  .scan-body{flex-direction:column-reverse}
+  .scan-side{width:100%;flex:none;border-left:0;border-bottom:1px solid var(--line);
+    flex-direction:row;flex-wrap:wrap;align-items:center;gap:8px;padding:10px}
+  .scan-stat{flex:1;min-width:180px;display:flex;flex-wrap:wrap;align-items:center;
+    gap:2px 12px;padding:8px 12px}
+  .scan-stat .k{font-size:11px}
+  .scan-stat .v{font-size:18px;line-height:1.1}
+  .scan-stat .row2{padding:0;font-size:11.5px;display:flex;align-items:baseline;gap:5px;white-space:nowrap}
+  .scan-help{flex-basis:100%}
+  .scan-nudge{flex-basis:100%;gap:5px}
+  .scan-nudge button{flex:1;min-width:0;height:34px;font-size:12.5px;padding:0 4px}
+  .scan-side>#bApplyScan{height:38px}
+  .scan-side>#bRescan{height:38px}
   /* 窄屏：顶栏按钮行可横向滑动（不显示滚动条），不再把右侧按钮裁掉 */
   header{overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch}
   header::-webkit-scrollbar{display:none}

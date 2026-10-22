@@ -278,16 +278,13 @@ function resetScan(keepImg){
   drawScan();
 }
 
-/* ---- 使用说明：展屏（宽屏/横屏/全屏）默认收起，点顶栏「?」展开 ---- */
-var scanHelpOpen=true;
-function scanWideMode(){
-  return window.innerWidth>=900 || window.innerWidth>window.innerHeight || !!document.fullscreenElement;
-}
+/* ---- 使用说明：默认收起（桌面/移动端都不占地方），点顶栏「?」展开 ---- */
+var scanHelpOpen=false;
 function applyScanHelp(){
   $("scanHelp").classList.toggle("off",!scanHelpOpen);
   $("bScanHelp").classList.toggle("on",scanHelpOpen);
 }
-function scanHelpSync(){ scanHelpOpen=!scanWideMode(); applyScanHelp(); }
+function scanHelpSync(){ scanHelpOpen=false; applyScanHelp(); }
 $("bScanHelp").addEventListener("click",function(){
   scanHelpOpen=!scanHelpOpen; applyScanHelp();
 });
@@ -298,7 +295,7 @@ scanHelpSync();
 $("bScan").addEventListener("click",function(){
   hideLocCard();
   $("ovScan").classList.add("on");
-  scanHelpSync();               // 每次打开都按当前形态决定说明是否收起
+  scanHelpSync();               // 每次打开都回到「说明默认收起」
   if(!scan.img){ resetScan(false); }
   else { drawScan(); }
   setTimeout(drawScan,60);
