@@ -46,6 +46,11 @@ function doPinch(){
 }
 export function pushUndo(ch){ if(!ch.length) return; S.undoStack.push(ch); if(S.undoStack.length>50) S.undoStack.shift(); }
 
+/* 撤销的联动钩子：引导摆放注册进来——用户撤销的正好是引导刚放下的那一条时，
+   引导要跟着退回上一条（否则棋盘回退了、引导指针还停在下一步，两边对不上）。 */
+var undoHook=null;
+export function setUndoHook(fn){ undoHook=fn; }
+
 export function tapCell(i){
   var prev=S.states[i], next=0, note="";
   if(prev===1||prev===3||prev===4){
@@ -118,7 +123,12 @@ export function doUndo(){
   var c=S.undoStack.pop();
   if(!c){ toast("没有可撤销的操作"); return; }
   for(var i=0;i<c.length;i++){ S.states[c[i][0]]=c[i][1]; paint(c[i][0]); markChange(c[i][0]); }
-  afterChange(); toast("已撤销 "+c.length+" 处改动"); vibrate(18);
+  afterChange();
+  var backed=false;
+  try{ backed = undoHook ? !!undoHook(c) : false; }catch(err){}
+  if(backed) toast("已撤销 · 退回上一步引导"); 
+  else toast("已撤销 "+c.length+" 处改动");
+  vibrate(18);
 }
 // 手势监听挂到 wrap 而不是 board：手指点在格子以外的空白处也要能平移，
 // 两根手指一根在画布内、一根在画布外也要能识别为双指缩放

@@ -3,7 +3,7 @@ import { $, toast, vibrate } from "./dom.js";
 import { fmt, idxToRC, zoneOf, zoneLetter } from "./coords.js";
 import { mainComp, promoteConnected } from "./grid.js";
 import { paint, afterChange, focusSet } from "./board.js";
-import { pushUndo } from "./interact.js";
+import { pushUndo, setUndoHook } from "./interact.js";
 import { markChange } from "./sync.js";
 import { beaconShow, beaconHide } from "./beacon.js";
 
@@ -20,7 +20,7 @@ import { beaconShow, beaconHide } from "./beacon.js";
    状态放 S.guideActive（共享 store），避免与 interact.js 循环依赖；
    照片位置由 scan.js 通过 setGuideProviders 注入（避免 scan↔guide 循环 import）。 */
 
-var G={ q:[], k:0, cur:[], done:0 };
+var G={ q:[], k:0, cur:[], done:0, applied:[] };
 
 /* 当前目标的高亮/闪烁交给 beacon.js（和「找点」用同一套：进行中绿底 + 620ms 硬闪）。
    单块亮一块、整片亮整片；点「放好了 / 跳过」后 showCur 换目标。 */
@@ -90,16 +90,6 @@ function buildQueue(targets){
     }
   });
 
-  function attached(ids){
-    for(var k=0;k<ids.length;k++){
-      var nb=S.adj[ids[k]]||[];
-      for(var j=0;j<nb.length;j++){
-        var st=S.states[nb[j]];
-        if(st===1||st===3||st===4) return true;
-      }
-    }
-    return false;
-  }
   function centroidDist(ids){
     if(!main.length) return 0;
     var c=0, r=0;
@@ -107,18 +97,61 @@ function buildQueue(targets){
     return Math.hypot(c/ids.length-mc, r/ids.length-mr);
   }
   items.forEach(function(it){
-    it.att=attached(it.ids);
     it.n=it.ids.length;
     it.dist=centroidDist(it.ids);
-    it.head=it.ids[0];        // 编号最小的一块：棋盘还空时拿它当「从上往下、从左往右」的次序
+    it.head=it.ids[0];        // 编号最小的一块：平手时当「从上往下、从左往右」的次序
   });
-  items.sort(function(a,b){
-    if(a.att!==b.att) return a.att?-1:1;      // 先把已经能接上的放完
-    if(a.n!==b.n) return b.n-a.n;              // 能整片放的优先（别东一块西一块）
-    if(a.dist!==b.dist) return a.dist-b.dist;
-    return a.head-b.head;
-  });
-  return items;
+  return growOrder(items);
+}
+
+/* 按「连得起来」排序（顺序在进引导时一次算定，这样撤销回退才能按序号走）：
+   拿棋盘上已有的块（1/3/4）当起点，反复挑——
+     ① 紧挨着**上一条**的（继续沿着这一片长下去）；
+     ② 否则紧挨着**已铺开的整片**的；
+     ③ 都没有 → 说明这一片周围再没有能接上的了，换下一个整块重新起头；
+   每一档里都**整块的优先**（块大先放），块一样大再按离主片区近、编号小。
+   这样不会出现「整块一股脑先放完、最后满地捡单块」，而是贴着已拼区一块块连下去。 */
+function growOrder(items){
+  var placed=new Set();
+  for(var k=1;k<=S.cfg.total;k++){
+    var st=S.states[k];
+    if(st===1||st===3||st===4) placed.add(k);
+  }
+  var left=items.slice(), out=[], last=null;
+
+  function touches(it,set){
+    if(!set) return false;
+    for(var k=0;k<it.ids.length;k++){
+      var nb=S.adj[it.ids[k]]||[];
+      for(var j=0;j<nb.length;j++) if(set.has(nb[j])) return true;
+    }
+    return false;
+  }
+  function better(a,b){                      // 大块 → 近 → 编号小
+    if(a.n!==b.n) return a.n>b.n;
+    if(a.dist!==b.dist) return a.dist<b.dist;
+    return a.head<b.head;
+  }
+  function takeBest(pred){
+    var pick=-1;
+    for(var k=0;k<left.length;k++){
+      if(pred && !pred(left[k])) continue;
+      if(pick<0 || better(left[k],left[pick])) pick=k;
+    }
+    return pick;
+  }
+
+  while(left.length){
+    var lastSet=last?new Set(last.ids):null;
+    var pick=takeBest(function(it){ return touches(it,lastSet); });
+    if(pick<0) pick=takeBest(function(it){ return touches(it,placed); });
+    if(pick<0) pick=takeBest(null);          // 全都接不上：挑最大的另起一片
+    var it=left.splice(pick,1)[0];
+    out.push(it);
+    for(var q=0;q<it.ids.length;q++) placed.add(it.ids[q]);
+    last=it;
+  }
+  return out;
 }
 
 /* 浮条左边的照片小窗：把目标块（组）在**刚识别的那张照片**上的位置圈出来 */
@@ -184,20 +217,42 @@ function applyItem(ids){
   var demoted=0;
   orig.forEach(function(v,k){ if(S.states[k]===3) demoted++; });
   orig.forEach(function(v,k){ paint(k); markChange(k); });
+  var ids=Array.from(orig.keys());
   pushUndo(Array.from(orig.entries()));
   afterChange();
-  return { n:orig.size, demoted:demoted };
+  return { n:orig.size, demoted:demoted, ids:ids };
 }
+
+/* 撤销联动：撤销的正好是引导放下的某一条 → 引导跳回那一条（重新高亮 + 重新聚焦）。
+   记录用**栈**：中途点过「跳过」不影响判断（跳过不产生撤销记录），
+   所以「放 A → 跳过 B → 撤销」应该退回 A，而不是停在 B。
+   其它改动（比如引导途中随手点了别的块）只回退棋盘，不动引导指针。 */
+function guideOnUndo(chunk){
+  if(!S.guideActive || !G.applied.length) return false;
+  var top=G.applied[G.applied.length-1];
+  var got=new Set();
+  for(var k=0;k<chunk.length;k++) got.add(chunk[k][0]);
+  if(got.size!==top.ids.length) return false;
+  for(var j=0;j<top.ids.length;j++) if(!got.has(top.ids[j])) return false;
+  G.applied.pop();
+  if(G.done>0) G.done--;
+  G.k=top.k;
+  showCur();                    // 回到那一条：闪的还是它，缩放也回到它
+  return true;
+}
+setUndoHook(guideOnUndo);
 
 // ok=true「放好了」：这一条（单块 / 整组）写进棋盘；ok=false「跳过」：保持未拼。
 function guideNext(ok){
   if(!S.guideActive) return;
   var ids=(G.cur||[]).slice();
+  var at=G.k;
   if(ok){
     var r=applyItem(ids);
     if(r.n){
       G.done++;
-      toast("已放 "+r.n+" 块"+(r.demoted?("，其中 "+r.demoted+" 块待定（还没连上主片区）"):""));
+      if(r.ids) G.applied.push({ k:at, ids:r.ids });
+      toast("已放 "+r.n+" 块"+(r.demoted?("，其中 "+r.demoted+" 块待定（还没连上主片区）"):"")+" · 放错了按 ↶ 撤销可退回这一步");
       vibrate(15);
     }
   } else if(ids.length){
@@ -229,7 +284,7 @@ export function guideExit(){
   if(!S.guideActive) return;
   var left=G.q.length-G.k-(G.k<G.q.length?1:0);   // 还没轮到的条数
   clearGcur();
-  G.q=[]; G.k=0; G.cur=[]; G.done=0;
+  G.q=[]; G.k=0; G.cur=[]; G.done=0; G.applied=[];
   S.guideActive=false;
   document.body.classList.remove("guideon");
   var cv=$("gdPic"); if(cv) cv.style.display="none";

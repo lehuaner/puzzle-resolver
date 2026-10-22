@@ -151,10 +151,10 @@ function bottomInset(H){
 }
 
 /* 目标聚焦（找点 / 摆放引导共用同一套）：
-   · 缩放按视口比例算——目标包围盒的长边占**可视区**短边的 42%，夹在 SCALE_MIN~2.6；
-   · 但要保证**至少一块已完成(1)的片还在画面里**（靠缩小实现，不靠平移），
-     否则用户放大到满屏一块、完全不知道自己相对整图在哪；最近的那块实在装不下
-     （离得太远，缩到下限也不行）时退一步：把目标与它的中点居中，两边都露一半；
+   · 缩放按视口比例算——目标包围盒的长边占**可视区**短边的 42%，夹在 0.55~2.6；
+   · 但要保证**最近的一块已完成(1)整格都在画面里**（按整格算，不是按中心点算），
+     否则用户放大到满屏一块、完全不知道自己相对整图在哪；
+     需要缩太多（离得远）时最多缩到 0.3，剩下的差额用「让位平移」补（目标不会被推出画面）；
    · 居中到扣掉底部浮卡之后的可视区中央，目标不会被浮条/定位卡压住。 */
 export function focusSet(list,opt){
   if(!list||!list.length) return;
@@ -186,20 +186,23 @@ export function focusSet(list,opt){
     }
   }
   if(near){
-    var mx=Math.max(40,W/2-30), my=Math.max(40,visH/2-30), need=Infinity;
-    if(Math.abs(near.dx)>mx) need=Math.min(need, mx/Math.abs(near.dx));
-    if(Math.abs(near.dy)>my) need=Math.min(need, my/Math.abs(near.dy));
-    /* 缩一点就够 → 缩到刚好把那块已完成也装进来；要缩太多（离得远）→ 最多缩到 0.3 就停，
+    /* 判据要按**整格**算：那块已完成片自身也占半格，只留 30px 边距的话
+       （目标跟它只隔一格、缩放又放得很大时）它会被画面边缘切掉一半。
+       要求：|dx|*s + 半格*s ≤ 半视口 - 10，解出 s 的上限。 */
+    var half=S.cellSize/2, pad=10;
+    var Mx=(W/2-pad)/Math.max(1,Math.abs(near.dx)+half);        // 这一轴允许的最大缩放
+    var My=(visH/2-pad)/Math.max(1,Math.abs(near.dy)+half);
+    var need=Math.min(Mx,My);
+    /* 缩一点就够 → 缩到刚好把它整格装进来；要缩太多（离得远）→ 最多缩到 0.3 就停，
        剩下的差额交给下面的「让位」平移，别把目标缩成一个看不清的小点 */
     var FLOOR=0.3;
-    if(need<Infinity && need<s) s=Math.max(FLOOR, need);
-    if(Math.abs(near.dx)*s>mx || Math.abs(near.dy)*s>my){
-      /* 还是装不下：目标朝反方向让出「目标与那块已完成的中点」那段距离，
-         但让位量按**屏幕像素**封顶，保证目标自己不会被推出画面 */
-      var capBx=Math.max(0,W/2-70)/s, capBy=Math.max(0,visH/2-70)/s;
-      cxb+=Math.min(Math.abs(near.dx)/2, capBx)*(near.dx<0?-1:1);
-      cyb+=Math.min(Math.abs(near.dy)/2, capBy)*(near.dy<0?-1:1);
-    }
+    if(need<s) s=Math.max(FLOOR, need);
+    // 缩到下限还是装不下：把目标朝反方向让位，让那块已完成整格进来（让位量按屏幕像素封顶）
+    var mx2=Math.max(0,(W/2-pad)/s-half), my2=Math.max(0,(visH/2-pad)/s-half);
+    var shx=Math.min(Math.max(0,Math.abs(near.dx)-mx2), Math.max(0,(W/2-60)/s));
+    var shy=Math.min(Math.max(0,Math.abs(near.dy)-my2), Math.max(0,(visH/2-60)/s));
+    cxb+=shx*(near.dx<0?-1:1);
+    cyb+=shy*(near.dy<0?-1:1);
   }
   S.scale=s;
   S.tx=W/2-cxb*s; S.ty=visH/2-cyb*s;
