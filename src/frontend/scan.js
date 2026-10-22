@@ -1220,6 +1220,68 @@ function recalcScan(){
     });
     if(inferredIdx) inferred=inferredIdx.size;
   }
+  /* ---- 推算位 vs 读数：同一处出现两个编号时，以网格位为准 ----
+     整块模式下网格映射可信（残差 <0.5 格距），某格推算出的编号就是这块**该有的号**。
+     若同一位置（<0.45 片宽）还压着一条别的编号的读数，那是 OCR 一位之差读错了——
+     85889 实测 10 处：628/626、683/663、878/678、983/683、109/703、762/752、764/754、
+     476/776、277/777、602/802，画面上就变成「同一处两个数字」。
+     按用户确认的口径：**推算（网格位）是对的**。这里把那条读数**改号**到推算的编号
+     —— 保留它的位置与角度、只换号，所以不会掉块（628 与 626 本来就是同一块）。 */
+  scan.gridFix=null;
+  if(scan.blockMode && inferredPos && !scan._adopting){
+    var cand=[];
+    Object.keys(inferredPos).forEach(function(ks){
+      var i2=+ks, ip=inferredPos[i2];
+      if(!ip || !ip.side) return;
+      var lim=ip.side*0.45, hit=null, hd=1e9;
+      scan.ocr.map.forEach(function(r,ri){
+        if(ri===i2) return;                              // 同号不算冲突（那条读数就是它）
+        var d=Math.hypot(r.x-ip.x, r.y-ip.y);
+        if(d<lim && d<hd){ hd=d; hit=ri; }
+      });
+      if(hit!=null) cand.push({ from:hit, to:i2, d:hd });
+    });
+    /* 目标号当前已有读数时一般不动（那是别处的读数，别抢），**除非那条读数自己也是
+       要被改掉的错号**——这就成了链（983→683→663），两头都得改。
+       再按距离去重：一条读数只改一次、一个目标号只被一条占用。 */
+    var willFix=new Set(cand.map(function(c){ return c.from; }));
+    cand=cand.filter(function(c){ return !scan.ocr.map.has(c.to) || willFix.has(c.to); });
+    cand.sort(function(a,b){ return a.d-b.d; });
+    var gfix=[], usedF=new Set(), usedT=new Set();
+    cand.forEach(function(c){
+      if(usedF.has(c.from)||usedT.has(c.to)) return;
+      usedF.add(c.from); usedT.add(c.to); gfix.push(c);
+    });
+    if(gfix.length){
+      scan._adopting=true;
+      /* 分两阶段，顺序很关键：一个号可能**既是**A 处要改掉的错号、**又是**B 处要改成的新号
+         （85889 实测链：983→683→663）。若边删边插，683 先被拉黑再删掉，B 处就永远补不回来
+         → 那一格整块丢失。所以：① 先快照所有改动 ② 统一删 ③ 统一插；
+         且「是别处目标号」的旧号**不进黑名单**（它马上要以新身份插回来）。 */
+      var plan=[], toSet=new Set();
+      gfix.forEach(function(f){
+        var rd=scan.ocr.map.get(f.from); if(!rd) return;
+        plan.push({ from:f.from, to:f.to, x:rd.x, y:rd.y, ang:rd.ang||0 });
+        toSet.add(f.to);
+      });
+      plan.forEach(function(p){
+        if(!toSet.has(p.from)) dropReading(p.from,true);  // 旧号记下角度再拉黑
+        scan.ocr.map.delete(p.from);
+      });
+      plan.forEach(function(p){
+        if(scan.ocr.map.has(p.to)) return;
+        insertReading(p.to, p.x, p.y);                    // 原位换成网格位给的号
+        var nr=scan.ocr.map.get(p.to); if(nr) nr.ang=p.ang;  // 角度沿用（丢了拼好组会散架）
+      });
+      scan.gridFix=gfix.map(function(f){ return f.from+"→"+f.to; });
+      scan.gridFixLog=(scan.gridFixLog||[]).concat(scan.gridFix);
+      if(!autoChain) toast("同一处两个编号：按网格位修正 "+gfix.length+" 处（"
+        +scan.gridFix.slice(0,3).join("、")+(gfix.length>3?"…":"")+"）");
+      recalcScan();                                      // 改完重算一遍（下一轮不再有冲突）
+      scan._adopting=false;
+      return;
+    }
+  }
   /* ---- 可疑点查重：结果里已经有这块 → 不用人工审 ----
      「可疑」说的是「这块可能读错了（位置/编号对不上）」，但如果这个编号**已经进了结果集**
      （读数 / 推算 / 延伸 任一来源都算——用户明确说「即使是延伸出来的」），说明算法已经
@@ -1323,6 +1385,7 @@ function resetScan(keepImg,keepOcr){
   scan.gaps=null; scan.gapTried=[];      // 补漏跑过但读不出编号的位置
   scan.weakDrop=[];                      // 人工「删掉这处提示」的二义位/漏读位
   scan.inferDrop=new Set();              // 人工删掉的推算块编号（不再推算）
+  scan.gridFix=null; scan.gridFixLog=[]; // 「同一处两个编号」按网格位改号的记录
   extLv=0;                               // 延伸档位归零（重新标定/换照片后按常规范围算）
   scan.gridAdj=false;                    // 人工微调过网格？（保持整块模式，别被自动裁决推翻）
   scan.suspAck=new Set();                       // 人工点过「无误」的可疑块
@@ -2152,6 +2215,12 @@ function updateScanStats(){
       +(sp.length?('　'+sp.join("、")+"…"):'')+'</span>');
     parts.push(chips.join(""));
   }
+  if(scan.gridFixLog && scan.gridFixLog.length){
+    // 「同一处两个编号」按网格位改号的结果（推算出来的为准，只换号不掉块）
+    parts.push('<span style="color:#ffd05a">同一处两个编号 → 已按网格位修正 '
+      +scan.gridFixLog.length+' 处：'+scan.gridFixLog.slice(0,6).join("、")
+      +(scan.gridFixLog.length>6?"…":"")+'</span>');
+  }
   if(scan.suspAuto && scan.suspAuto.length){
     // 查重自动确认的：结果里已经有这块，只确认、不删除（删了就掉块）
     parts.push('<span style="color:#8fa3bb">已自动确认 '+scan.suspAuto.length+' 个可疑（结果里已有该块，'
@@ -2673,7 +2742,8 @@ export function scanGuideInfo(){
   if(scan.grpMap){ for(var k in scan.grpMap){ if(scan.grpMap[k]!=null) grpOf[k]=scan.grpMap[k]; } }
   if(scan.inferredPos){ for(var k2 in scan.inferredPos){
     if(grpOf[k2]==null && scan.inferredPos[k2].grp!=null) grpOf[k2]=scan.inferredPos[k2].grp; } }
-  return { grpOf:grpOf, nGroups:(scan.groups?scan.groups.length:0) };
+  /* block：整块模式（网格可信）→ 引导排队时允许把没组的块顺着 4 邻并进相邻组 */
+  return { grpOf:grpOf, nGroups:(scan.groups?scan.groups.length:0), block:!!scan.blockMode };
 }
 
 /* 照片小窗：把目标块（或整组）在**刚识别的那张照片**上的位置圈出来。

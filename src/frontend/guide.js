@@ -29,10 +29,11 @@ var infoProv=null, drawProv=null;
 /* scan.js 注入：infoFn() → {grpOf:{idx:组号}}；drawFn(canvas, ids) → 画出照片小窗 */
 export function setGuideProviders(infoFn, drawFn){ infoProv=infoFn; drawProv=drawFn; }
 
-function grpOfMap(){
-  try{ if(infoProv){ var inf=infoProv(); return (inf&&inf.grpOf)||{}; } }catch(err){}
+function guideInfo(){
+  try{ if(infoProv){ return infoProv()||{}; } }catch(err){}
   return {};
 }
+function grpOfMap(){ return guideInfo().grpOf||{}; }
 
 /* 队列：
    ①先把目标块按**网格 4 邻**并成「连片」——OCR 没认成一组、但编号上挨着的几块，
@@ -51,7 +52,35 @@ function buildQueue(targets){
   (targets||[]).forEach(function(i){
     if(i>=1 && i<=S.cfg.total && !seen.has(i)){ seen.add(i); uniq.push(i); }
   });
-  var grpOf=grpOfMap();
+  var info=guideInfo();
+  var grpOf={};
+  var src=info.grpOf||{};
+  for(var sk in src){ if(src[sk]!=null) grpOf[sk]=src[sk]; }
+  /* 整块模式（网格映射可信，残差 <0.5 格距）：4 邻相邻就是真的拼在一起。
+     OCR 并查集只把「读到的编号」并成组，推算出来的块没组号 → 排队时全散成单块
+     （用户：『除了最大的组，剩下都是单个单个的，但它们其实也在组内、是连在一起的』）。
+     这里把没组的块**顺着 4 邻并进相邻的组**（多轮扩散），一条引导就是一整片。 */
+  if(info.block){
+    var gsz={};
+    uniq.forEach(function(i){ if(grpOf[i]!=null) gsz[grpOf[i]]=(gsz[grpOf[i]]||0)+1; });
+    for(var pass=0; pass<4; pass++){
+      var moved=0;
+      uniq.forEach(function(i){
+        if(grpOf[i]!=null) return;
+        var vote={}, best=null, bv=0;
+        (S.adj[i]||[]).forEach(function(j){
+          if(grpOf[j]==null) return;
+          vote[grpOf[j]]=(vote[grpOf[j]]||0)+1;
+        });
+        for(var g in vote){
+          var sc=vote[g]*1000+(gsz[g]||0);          // 邻居里出现最多的组优先，平手取大组
+          if(sc>bv){ bv=sc; best=+g; }
+        }
+        if(best!=null){ grpOf[i]=best; gsz[best]=(gsz[best]||0)+1; moved++; }
+      });
+      if(!moved) break;
+    }
+  }
 
   // 并查集：目标块之间按网格 4 邻合并
   var par={};
@@ -65,7 +94,20 @@ function buildQueue(targets){
   uniq.forEach(function(i){ var r=find(i); (cl[r]=cl[r]||[]).push(i); });
 
   var items=[];
-  Object.keys(cl).forEach(function(r){
+  if(info.block){
+    /* 整块模式：网格可信，网格上连成一片的就是**一整片** → 一条引导走完，
+       不再按 OCR 组拆、也不受 MAXC 限制（否则又变成「1 大组 + 一堆零碎」）。
+       标签沿用分量里占多数的那个 OCR 组号，没有就写「连片」。 */
+    Object.keys(cl).forEach(function(r){
+      var ids=cl[r].sort(function(a,b){ return a-b; });
+      var vote={}, best=null, bv=0;
+      ids.forEach(function(i){ if(grpOf[i]!=null) vote[grpOf[i]]=(vote[grpOf[i]]||0)+1; });
+      for(var g in vote){ if(vote[g]>bv){ bv=vote[g]; best=+g; } }
+      items.push({ ids:ids, grp:(bv*2>=ids.length?best:null),
+                   group:(bv*2>=ids.length && ids.length>=2), merged:!(bv*2>=ids.length) });
+    });
+  }
+  else Object.keys(cl).forEach(function(r){
     var ids=cl[r].sort(function(a,b){ return a-b; });
     if(ids.length<=MAXC){
       var gs={};
@@ -76,16 +118,31 @@ function buildQueue(targets){
                    group:(ids.length>=2 && ks.length===1),   // 就是一个 OCR 拼好组
                    merged:(ids.length>=2 && ks.length!==1) }); // 相邻块拼出来的连片
     } else {
-      // 太大：按 OCR 组拆开，没组的单块各自一条
-      var byGrp={};
+      /* 太大：按「拼好组」拆；**剩下的没组块不再碎成单块**——
+         以前每块各自一条，整张大图就变成「1 大组 + 几十条单块」（用户：「其实只需要
+         引导一组就行」）。现在把没组的块在网格上再聚成连通的次级连片，一条一条走。 */
+      var byGrp={}, rest=[];
       ids.forEach(function(i){
         var g=grpOf[i];
         if(g!=null) (byGrp[g]=byGrp[g]||[]).push(i);
-        else items.push({ ids:[i], grp:null, group:false });
+        else rest.push(i);
       });
       Object.keys(byGrp).forEach(function(g){
         var a=byGrp[g].sort(function(x,y){ return x-y; });
         items.push({ ids:a, grp:+g, group:a.length>=2 });
+      });
+      var rset=new Set(rest), seen2=new Set();
+      rest.forEach(function(i){
+        if(seen2.has(i)) return;
+        var comp=[], st=[i]; seen2.add(i);
+        while(st.length){
+          var c0=st.pop(); comp.push(c0);
+          (S.adj[c0]||[]).forEach(function(j){
+            if(rset.has(j) && !seen2.has(j)){ seen2.add(j); st.push(j); }
+          });
+        }
+        comp.sort(function(x,y){ return x-y; });
+        items.push({ ids:comp, grp:null, group:false, merged:comp.length>=2 });
       });
     }
   });
