@@ -31,6 +31,13 @@
 - **v24**：①引导不再预铺结果，只排 `S.states!=1` 的块，`applyItem(ids)` 点「放好了」才单条落库 ②目标持续硬闪（`S.guideActive` 假自停）③**待定数必须在 `promoteConnected()` 之后数**；**棋盘全空不能判待定**，判据 `hadMain=base.size>0`（`mainComp(base)` 在 base 空时返回棋盘现有最大那片，写 `if(mainSet.size)` 等于没写）④改号浮层黑图＝坐标系没换算：`photoPosOf()` 给 OCR 工作坐标，`#pickZoom` 吃 scan 坐标，补 `k=scan.W/scan.ocr.w` ⑤微调网格拖不动图框＝`pointermove` 每帧 recalc 把残差拉大→blockMode 翻 false、弹回原位；改「拖动只 `drawScan()`、松手 recalc」+`scan.gridAdj` 锁 blockMode + `scanCellBase()`（标定解只做**判据**，微调只影响**画在哪**）⑥复核/补漏/补块/改号插进来的读数只在 `scan.ocr.map`，标签循环必须遍历 **map**（遍历 results 会「光秃秃」）。
 - **v25**：先按 `S.adj` 并查集把目标块并成**连片**（≤9 块；>9 退回 OCR 组/单块），排序 `att(贴已拼区)→n 大→质心距离→head`；85891 48→34 条。
 - **v26**：找点与引导共用 focusSet/beacon；找点 900→0.3 倍时 7 块已完成全可见。
+- **延伸 / 删了能点回来（v28，74074d5）**：
+  - `maskWhite` 比 `mask` 多一条「小窗亮度均匀 ((max-min)/max<0.10)」用来滤光斑，**代价是把阴影/侧光里的真片整片滤掉**（85890 实测阴影片 maskWhite≈0.00 而 mask≈0.90；木地板两者都≈0.00）。所以新增 `maskCov()`（纯 Otsu 阈值）只给「延伸」用。
+  - `extLv`(0/1) + `extendInfer(cb)`：散块组推算放宽到 bbox **±6/48 块/8 轮**（原 ±3/16/4）；整块模式 `fgAt` 放宽到非严格档；再沿 `alignedIdx ∪ inferredIdx` 4 邻往外 BFS 一圈（片心 `maskCov≥0.55`，上限 80）。
+  - **延伸准入 `extOk(j)` 必须有**：贴邻 ≥2 块已确认 **或** 0.8 格距内有任何 `ocr.results` 检出。没这条 85889 反光区（20 格零检出、只一点与主体相接）会被整块误加 21 块。
+  - 自动链：`rvDone()` → `autoVerify(tag,cb,{extend:true})` → 复核 → 补漏 → **延伸**（延伸纯几何，`!OSVC.ok` 也跑，此时 nW/nG 归零）。工具条 `#bExtend` 常驻；`resetScan` 归零 `extLv`；`extendInfer` 一块没多推就退回原档位。
+  - **删掉的块**：整块模式下 `scanHitIdx` 走网格兜底总能拿到编号，但该号不在 `ocr.map` 也不在 `inferredPos` → 老代码**什么都不弹**。现在 `ocr.drop`/`inferDrop` 里的号走 `openPick({restore})`「补回来」，`photoPosOf` 加 `src:"keep"`（用 `ocr.keep` 原位置+原角度；角度丢了拼好组会散架），散块空白落点用 `dropNear()`（0.85 片宽）命中。
+  - **整块模式点没算进来的格子** → `openPick({cell:idx})`「该是 N，确认补上？」→ `addManualReading`。这才是「即使选了增删也点不动」的那条路。
 
 ## 布局 / 窄屏
 - **v22**：≤900 `.scan-stage{flex:0 0 auto;height:clamp(160px,44vh,460px)}` + `.scan-side{flex:1 1 auto;min-height:0;overflow-y:auto}`。①**数据栏底 padding 归零**——`position:sticky;bottom:0` 对齐内容盒底，留 10px 就从缝里露字 ②贴底栏必须 `flex:0 0 100%;width:100%`+`background:var(--panel)`，否则 `align-items:flex-start` 下只占半行。≤520：三动作键 12.5px 压单行、`.scan-bar` 改 `nowrap+overflow-x:auto`、`.scan-tip` 改 `left/right:8px+transform:none`。
