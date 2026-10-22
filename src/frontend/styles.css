@@ -258,6 +258,7 @@ body.batch .legend{display:none}
 .pk-res b{color:#4ade80;font-size:15px}
 .pk-btns{display:flex;gap:8px;margin-top:11px}
 .pk-btns .btn{flex:1;height:42px}
+.scan-acts{display:flex;flex-direction:column;gap:10px;flex:none}
 .scan-side{width:280px;flex:none;border-left:1px solid var(--line);
   padding:12px;display:flex;flex-direction:column;gap:10px;overflow-y:auto}
 .scan-stat{background:#0d151f;border:1px solid #1e2a3a;border-radius:12px;padding:12px}
@@ -378,9 +379,28 @@ body.guideon .guidebar{display:flex}
   /* 移动端：识别面板右侧数据面板移到顶部，横向排布；
      说明文字默认收起（顶栏「?」展开），工具条/微调键各占一行。
      column-reverse：DOM 里 stage 在前（桌面要它在左），这里反转让数据栏到顶上 */
-  .scan-body{flex-direction:column-reverse}
-  .scan-side{width:100%;flex:none;border-left:0;border-bottom:1px solid var(--line);
-    flex-direction:row;flex-wrap:wrap;align-items:center;gap:8px;padding:10px}
+  /* 窄屏：图片区**固定高度**，信息栏在剩下的空间里自己滚。
+     以前 body 是定高的、信息栏 flex:none 按内容长高（拼好组明细 + 可疑 chips
+     能有二三十行），照片区被挤到只剩一条甚至被顶到看不见。 */
+  .scan-body{flex-direction:column-reverse;height:auto;flex:1 1 auto;min-height:0}
+  .scan-stage{flex:0 0 auto;height:clamp(160px,44vh,460px)}
+  /* 底部不留 padding：滚动容器的下沿就是内容下沿，贴底栏才不会有缝漏出底下的字 */
+  .scan-side{width:100%;flex:1 1 auto;min-height:0;border-left:0;border-bottom:1px solid var(--line);
+    flex-direction:row;flex-wrap:wrap;align-items:flex-start;gap:8px;padding:10px 10px 0;
+    overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
+    scrollbar-width:thin}
+  /* 撑满宽度的那几块（说明/微调键）在滚动容器里别被压扁 */
+  .scan-side>.row2,.scan-side>.scan-stat{flex:1 1 auto;min-width:0}
+  .scan-nudge,.scan-help{flex:0 0 100%}
+  /* 「应用/引导/重新标定」整排贴底：始终可见，不用滚到底才能点；
+     带底色 + 上投影，滚动内容从它下面过去，看着是一条底栏而不是压字 */
+  .scan-acts{flex:0 0 100%;width:100%;flex-direction:row;flex-wrap:wrap;gap:8px;
+    position:sticky;bottom:0;z-index:3;
+    background:var(--panel);padding:8px 0 10px;
+    box-shadow:0 -12px 16px -10px rgba(0,0,0,.85)}
+  .scan-acts>button{flex:1 1 auto;height:38px;min-width:0}
+  /* 照片区变矮了，提示气泡别把画面糊住 */
+  .scan-tip{font-size:11.5px;padding:6px 10px;line-height:1.45;bottom:8px;max-width:calc(100% - 16px)}
   .scan-stat{flex:1;min-width:180px;display:flex;flex-wrap:wrap;align-items:center;
     gap:2px 12px;padding:8px 12px}
   .scan-stat .k{font-size:11px}
@@ -389,8 +409,8 @@ body.guideon .guidebar{display:flex}
   .scan-help{flex-basis:100%}
   .scan-nudge{flex-basis:100%;gap:5px}
   .scan-nudge button{flex:1;min-width:0;height:34px;font-size:12.5px;padding:0 4px}
-  .scan-side>#bApplyScan{height:38px}
-  .scan-side>#bRescan{height:38px}
+  .scan-acts>#bApplyScan{height:38px}
+  .scan-acts>#bRescan{height:38px}
   /* 窄屏：顶栏按钮行可横向滑动（不显示滚动条），不再把右侧按钮裁掉 */
   header{overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch}
   header::-webkit-scrollbar{display:none}
@@ -400,4 +420,18 @@ body.guideon .guidebar{display:flex}
   .batchbar .btn[data-act="exit"]{margin-left:auto;height:34px;padding:0 13px;font-size:13px}
   .bbtns{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-left:0;flex-wrap:nowrap}
   .bbtns .btn{height:44px;padding:0 4px;font-size:13.5px}
+}
+
+/* 更窄的手机（≤520）：贴底三个键挤成一行，别吃掉本就不多的信息滚动空间 */
+@media (max-width:520px){
+  .scan-acts{gap:6px}
+  .scan-acts>button{font-size:12.5px;padding:0 4px;height:36px;letter-spacing:-.2px}
+  .scan-acts>#bApplyScan,.scan-acts>#bRescan{height:36px}
+  /* 照片区工具条别折行（折一行就吃掉 50px 画面）：单行横向滑动 */
+  .scan-bar{left:8px;right:8px;max-width:none;flex-wrap:nowrap;justify-content:flex-start;
+    overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+  .scan-bar::-webkit-scrollbar{display:none}
+  .scan-bar button,.scan-bar .sdiv{flex:none}
+  /* 提示气泡铺满整行宽度，同样的字数少折一半行数，少挡画面 */
+  .scan-tip{left:8px;right:8px;transform:none;max-width:none;font-size:11px;padding:5px 9px;bottom:6px}
 }
