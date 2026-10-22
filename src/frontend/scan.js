@@ -1220,6 +1220,22 @@ function recalcScan(){
     });
     if(inferredIdx) inferred=inferredIdx.size;
   }
+  /* ---- 可疑点查重：结果里已经有这块 → 不用人工审 ----
+     「可疑」说的是「这块可能读错了（位置/编号对不上）」，但如果这个编号**已经进了结果集**
+     （读数 / 推算 / 延伸 任一来源都算——用户明确说「即使是延伸出来的」），说明算法已经
+     认定它在，再让人过一遍只是耽误时间。
+     这里**只做自动确认、绝不删块**：删掉就会掉块，宁可留着。也不写进 `suspAck`（那是
+     「人工已审」的永久黑名单）——每次重算重新查一遍，哪天它不在结果里了，可疑会重新冒出来。 */
+  scan.suspAuto=null;
+  if(suspIdx && suspIdx.size && set.size){
+    var dup=[];
+    suspIdx.forEach(function(i){ if(set.has(i)) dup.push(i); });
+    if(dup.length){
+      dup.sort(function(a,b){ return a-b; });
+      dup.forEach(function(i){ suspIdx.delete(i); });   // 与 scan.suspIdx 同一个 Set，同步生效
+      scan.suspAuto=dup;
+    }
+  }
   scan.result=set; scan.cellsChecked=checked;
   $("scanCells").textContent=checked;
   updateScanStats();
@@ -1392,8 +1408,10 @@ $("fImg").addEventListener("change",function(e){
               ok.forEach(function(r){ if(!scan.ocr.map.has(r.idx)) scan.ocr.map.set(r.idx,r); });
               if(ok.length>=2 && autoCalibrate(ok)) {
                 toast("已自动识别 "+ok.length+" 个编号"+(ok.some(function(r){return r.svc;})?"（PP-OCR）":""));
-                // 自动识别的收尾：复核漏读 → 补漏（不点按钮也该补回来）
-                setTimeout(function(){ autoVerify("自动识别"); }, 320);
+                /* 自动识别的收尾：复核漏读 → 补漏 → 延伸（不点按钮也该补回来）。
+                   带 extend 是必须的：可疑点大多会被「查重」自动确认掉，根本走不到
+                   人工审查那条链（rvDone），得在这里补一次延伸，否则「审完就延伸」落空。 */
+                setTimeout(function(){ autoVerify("自动识别", null, {extend:true}); }, 320);
               } else {
                 scan.ocrAuto=false;
                 $("scanTip").textContent=ok.length
@@ -1838,8 +1856,10 @@ function extendInfer(cb){
   recalcScan(); drawScan(); updateScanStats();
   if(scan.calibrated) scanCalTip();
   var got=(scan.inferred||0)-before;
-  if(got<=0){
-    extLv=was;                                  // 没多推出一块：范围放大了也没用，退回去
+  /* 只有「从常规档第一次试探」失败才退回：已经在延伸档时再跑一次没收获，
+     绝不能退回 0 —— 那会把上一次延伸出来的块全撤掉（掉块）。 */
+  if(got<=0 && !was){
+    extLv=was;
     recalcScan(); drawScan(); updateScanStats();
   }
   if(!autoChain) toast(got>0 ? ("延伸 "+got+" 块（放宽范围又推出一圈）")
@@ -1854,7 +1874,7 @@ function extendInfer(cb){
 var autoChain=false, autoBusy=false;
 function autoVerify(tag, cb, opt){
   opt=opt||{};
-  var doExt = !!opt.extend && !extLv;
+  var doExt = !!opt.extend;          // 审完/补漏完都可以再推一次（extendInfer 内部自己判有没有收获）
   if(autoBusy || !scan.ocr){ if(cb) cb(0); return; }
   var nW=(scan.weakCells||[]).length, nG=(scan.gaps||[]).length;
   if(!OSVC.ok){ nW=0; nG=0; }                  // 服务没连：复核/补漏做不了，但延伸照跑
@@ -2131,6 +2151,12 @@ function updateScanStats(){
     parts.push('<span style="color:#ff8080">⚠可疑 '+nS+'（点编号跳过去 · ✓无误 · ✕删掉）'
       +(sp.length?('　'+sp.join("、")+"…"):'')+'</span>');
     parts.push(chips.join(""));
+  }
+  if(scan.suspAuto && scan.suspAuto.length){
+    // 查重自动确认的：结果里已经有这块，只确认、不删除（删了就掉块）
+    parts.push('<span style="color:#8fa3bb">已自动确认 '+scan.suspAuto.length+' 个可疑（结果里已有该块，'
+      +'不用人工审）：'+scan.suspAuto.slice(0,8).map(fmt).join("、")
+      +(scan.suspAuto.length>8?"…":"")+'</span>');
   }
   if(scan.loosePairs && scan.loosePairs.length){
     parts.push('<span style="color:#8fa3bb">相邻但编号不邻：'
