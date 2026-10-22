@@ -23,6 +23,18 @@
 - **v20**：①**删了还有编号**——标签循环遍历 `ocr.results` 而删除只动 `ocr.map` → 加 `scan.ocr.drop` 黑名单，原读数 `{x,y,ang}` 存 `scan.ocr.keep`（不存则组内角度对不上、拼好组散架：85891 725 删→106→94，按原角度补回 106）②**组框歪 40°**——det 框角 90° 歧义，2θ 平均把两垂直族抵消 → 改 **4θ 圆均值（周期 90°）**③**孤片误报**——散块模式降级软提示 `scan.loosePairs`，红色可疑只留给整块模式（85891 5→0）④**漏识别片** `scanGaps`：片心圆窗 maskWhite 落在**读数位自身分布**（15%~92% 分位）之间、且离任何读数/推算位>0.72 片宽→灰虚线「?」；「补漏 N」逐块 ROI 识别，读不出记 `scan.gapTried`（85891 106→117，85889 的 9 处全是反光）。
 - **v21**：①`autoVerify(tag)` 串「复核漏读 `recheckWeak` → 补漏 `fillGaps`」，在自动识别完、可疑点审完后跑（`autoChain` 静默、结束一条合计 toast；运行期禁用「应用」）②引导 item 级 `{ids,grp}`，浮条 `#gdPic` 用 `scanGuideDraw` 从原照片裁窗圈金框；scan↔guide 用 `setGuideProviders(infoFn,drawFn)` 防循环 import ③**点已有结果的块=改号** `applyRename(old,n)`（旧号进 drop+存角度→原位插新号→自动归组并闪整组；孤片报"第x列第y行·暂时没拼上"）；浮层多「删掉这块」。公用件 `photoPosOf(idx)`、`scanFlash(ids)`。坑：`组 10 · 2 块` 折行挤掉编号区 → `组10·2块`+`nowrap`。
 
+## 字母分区校验位 / 同位置冲突处置（v29b）
+- **字母 = 分区校验位**：片背印「字母+全局编号」，字母只是编号所在分区的重述 → `coords.js` 的 `letterZone(L)` / `zoneRangeOf(L)` / `numInZone(L,n)`，区间全部由 `zoneStart/zoneEnd/zoneCount`（`total`+`zoneSize`）推出，**不许写死 A-D 或 250**。字母读不出/超出本盘分区数时不误杀（返回 true）。判错时**改数字不改字母**（单个大字比三位小数字稳）。
+  - 85889 实测：越段读数只有 D-277、D-476、D-602、C-109、C-878 五条，正好是用户判定「推算对」的那五条冲突 —— 吻合度 100%。
+- **同位置两个编号 → 默认采纳推算（网格位）的号**（v29 的「保留读数」已被否决：会删掉已补好的 476/277 → 空洞）。做法是**原位换号**：`map.delete(旧); rd.idx=新; rd.digits=fmt(新); map.set(新, rd)`，位置/角度/comps/svc 全沿用。**绝不能用 `insertReading` 造新读数**——它丢 comps → `readingSide` 错 → 拼好组散架。
+  - 保留读数的唯一反例：读数与字母自洽而推算号越段（说明网格偏了）。换不了（目标号别处已有读数）→ 进 `dupFix` 让人点。
+  - 换号后 ROI 会犯同一个错 → `scan.zoneFixAt`(错号+位置) + `zoneFixBlocks()` 在 `fillGaps`/`recheckWeak` 里挡。**只按位置挡，不全局拉黑**（B-476/B-277/A-109 都是照片另一头的真片）。
+- `roiOCR`/`roiNums` 现在连字母一起抓（以前只抓数字，校验位形同虚设）；`insertReading(idx,ox,oy,letter)` 多了可选字母参数。
+- **补点的放大镜/坐标别复用旧 OCR 坐标**：`endScanPointer` 原来 `pt0=photoPosOf(d.cell)`（按编号查 → 读数位与推算位互相顶替，弹出「之前 OCR 那个点」的原图）→ 只有该格确实有这条读数时才用读数坐标，否则一律用点击点 `d.pt`；`d.addPt` 分支同理。`restoreReading` 点击点离 `keep` 超过 1 片宽就以点击点为准（角度仍沿用 keep），并把压在同格的推算块删掉 + 记 `inferDrop`，免得下一轮又推回来打架。
+- 明细 chip：`⚠字母与编号不符 N`（`data-zone` 点跳）、`已按字母分区纠正 N 处`、`⚠同一处两个编号 N（网格位号已被别处占用）`。
+
+- **「认不准/漏读」提示（v29c）**：命中抽成 `weakHit(p)`，**移动模式也做命中**（用户要「不用切增删」）。只有真命中才记 `addPt` → 移动模式下点空白仍是纯平移；拖动由 `d.moved` 拦掉。候选编号必须按**结果集**过滤（`!map.has(v) && !set.has(v)`），只按 `map` 过滤会让已被推算占住的号继续当候选（「都有了还提示」）。**屏蔽名单有两条链**：`weakCells` 看 `weakDrop`、`gaps` 看 `gapTried` —— 删漏读位「?」时要两份都写，否则删了就复活。
+
 ## 引导 / 聚焦 / 高亮（v24~v27）
 - **高亮唯一实现 `beacon.js`**：`beaconShow(ids)` 挂 `.gcur`（常驻绿描边）+620ms 切 `.gblink`（`var(--green)`+`breath`＝图例「进行中」），`beaconHide()` 收；找点 9s 自动收。金色 `.found` 已退役，小地图避让选择器改 `.cell.gcur`。**`.cell.gcur` 必须 `overflow:visible`**，否则 `.cell{overflow:hidden}` 裁掉描边。
 - **聚焦唯一实现 `board.focusSet(list,opt)`**：基准 `min(W,visH)*0.42/max(bw,bh)` 夹 0.55~2.6；再算「最近一块已完成(1) 整格可见」`need=(半视口-10)/(|d|+半格)`，`s=max(0.3,min(s,need))`；0.3 装不下就**让位平移**（量按**屏幕像素**封顶 `(W/2-70)/s`）；`visH` 扣 `#guideBar`/`#locCard` 实测遮挡，目标居中到 `visH/2`。找点 `locate()` 必须**先 `showLocCard` 再 `focusSet`**。别用「中心点+固定边距」判可见——窄屏相邻一格会被切一半。
