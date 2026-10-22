@@ -34,4 +34,25 @@ export function zoneLetter(z){ return String.fromCharCode(65+z); }
 export function zoneCount(){ return Math.max(1,Math.ceil(S.cfg.total/S.cfg.zoneSize)); }
 export function zoneStart(z){ return z*S.cfg.zoneSize+1; }
 export function zoneEnd(z){ return Math.min((z+1)*S.cfg.zoneSize, S.cfg.total); }
+/* ---- 字母 ↔ 编号范围（ABCD 各有各的一段，全部由 total/zoneSize 推出来，不写死）----
+   片背印的是「字母 + 全局编号」，字母只是编号所在分区的重述——它是一枚**校验位**：
+   读到 D-476 而 D 段是 751–1000，那这条读数必错（字母是单个大字，比三位小数字稳得多，
+   所以判错时改数字、不改字母）。分区数随盘大小走（zoneCount），盘只有两袋时 E 就是不合法字母。 */
+export function letterZone(L){
+  if(!L) return -1;
+  var z=String(L).toUpperCase().charCodeAt(0)-65;
+  if(!(z>=0) || z>=zoneCount()) return -1;   // 空字母 / 超出本盘分区数：无从判断
+  return z;
+}
+export function zoneRangeOf(L){
+  var z=letterZone(L);
+  return z<0?null:{ lo:zoneStart(z), hi:zoneEnd(z) };
+}
+// 编号是否落在该字母的段内；字母读不出来（或不是本盘的字母）时不误杀，返回 true
+export function numInZone(L,n){
+  if(!(n>=1) || n>S.cfg.total) return false;
+  var z=letterZone(L);
+  if(z<0) return true;
+  return n>=zoneStart(z) && n<=zoneEnd(z);
+}
 export function fmt(i){ var s=String(i); while(s.length<3) s="0"+s; return s; }

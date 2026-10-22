@@ -1,6 +1,6 @@
 import { S } from "./store.js";
 import { $, toast, vibrate } from "./dom.js";
-import { fmt, idxToRC, rcToIdx, zoneOf, zoneLetter } from "./coords.js";
+import { fmt, idxToRC, rcToIdx, zoneOf, zoneLetter, numInZone, zoneRangeOf } from "./coords.js";
 import { mainComp, promoteConnected } from "./grid.js";
 import { paint, afterChange, centerOnSet, setView } from "./board.js";
 import { pushUndo, exitBatch } from "./interact.js";
@@ -1040,6 +1040,10 @@ function recalcScan(){
       function pushInfer(idx){
         if(inferredIdx.has(idx)) return;
         if(scan.inferDrop && scan.inferDrop.has(idx)) return;   // 人工删掉的推算块：不再推算
+        /* 已经有这条编号的读数就别再推算它 —— 否则画面上同一个号出现两次
+           （读数框 + 网格位推算框，就是用户说的「有两个 778」）。
+           读数是直接证据，位置以读数为准。 */
+        if(scan.ocr.map.has(idx)) return;
         var p=idxToRC(idx), q=scanCellXY(p);
         set.add(idx);                                  // 推算块入结果
         inferredIdx.add(idx); inferred++;
@@ -1220,66 +1224,75 @@ function recalcScan(){
     });
     if(inferredIdx) inferred=inferredIdx.size;
   }
-  /* ---- 推算位 vs 读数：同一处出现两个编号时，以网格位为准 ----
-     整块模式下网格映射可信（残差 <0.5 格距），某格推算出的编号就是这块**该有的号**。
-     若同一位置（<0.45 片宽）还压着一条别的编号的读数，那是 OCR 一位之差读错了——
-     85889 实测 10 处：628/626、683/663、878/678、983/683、109/703、762/752、764/754、
-     476/776、277/777、602/802，画面上就变成「同一处两个数字」。
-     按用户确认的口径：**推算（网格位）是对的**。这里把那条读数**改号**到推算的编号
-     —— 保留它的位置与角度、只换号，所以不会掉块（628 与 626 本来就是同一块）。 */
-  scan.gridFix=null;
-  if(scan.blockMode && inferredPos && !scan._adopting){
-    var cand=[];
+  /* ---- 推算位 vs 读数：同一处出现两个编号 → 采纳推算（网格位）那个号 ----
+     整块模式下网格映射整体可信，628/626、476/776 这类冲突实测都是 OCR 差一位、
+     推算侧是对的（用户口径：『比较的正确结果就是延伸/推算出来的是正确的』）。
+     处置必须是**原位换号**而不是删块：早期版本把 476、277 当成错号删掉 → 结果出空洞。
+     换号沿用这条读数自己的位置/角度/comps —— 只是把印号改对，那块片还在。
+     保留读数的唯一反例：读数的字母与编号自洽、推算的号反倒落在该字母段外（网格偏了）。
+     改完记进 scan.zoneFixLog，明细里能看到改了哪几处。 */
+  scan.dupFix=null;
+  if(scan.blockMode && inferredPos){
+    var dlist=[];
     Object.keys(inferredPos).forEach(function(ks){
       var i2=+ks, ip=inferredPos[i2];
       if(!ip || !ip.side) return;
       var lim=ip.side*0.45, hit=null, hd=1e9;
       scan.ocr.map.forEach(function(r,ri){
-        if(ri===i2) return;                              // 同号不算冲突（那条读数就是它）
+        if(ri===i2) return;                              // 同号：那条读数就是它（另见 pushInfer）
         var d=Math.hypot(r.x-ip.x, r.y-ip.y);
         if(d<lim && d<hd){ hd=d; hit=ri; }
       });
-      if(hit!=null) cand.push({ from:hit, to:i2, d:hd });
+      if(hit!=null) dlist.push({ read:hit, infer:i2, d:hd });
     });
-    /* 目标号当前已有读数时一般不动（那是别处的读数，别抢），**除非那条读数自己也是
-       要被改掉的错号**——这就成了链（983→683→663），两头都得改。
-       再按距离去重：一条读数只改一次、一个目标号只被一条占用。 */
-    var willFix=new Set(cand.map(function(c){ return c.from; }));
-    cand=cand.filter(function(c){ return !scan.ocr.map.has(c.to) || willFix.has(c.to); });
-    cand.sort(function(a,b){ return a.d-b.d; });
-    var gfix=[], usedF=new Set(), usedT=new Set();
-    cand.forEach(function(c){
-      if(usedF.has(c.from)||usedT.has(c.to)) return;
-      usedF.add(c.from); usedT.add(c.to); gfix.push(c);
-    });
-    if(gfix.length){
-      scan._adopting=true;
-      /* 分两阶段，顺序很关键：一个号可能**既是**A 处要改掉的错号、**又是**B 处要改成的新号
-         （85889 实测链：983→683→663）。若边删边插，683 先被拉黑再删掉，B 处就永远补不回来
-         → 那一格整块丢失。所以：① 先快照所有改动 ② 统一删 ③ 统一插；
-         且「是别处目标号」的旧号**不进黑名单**（它马上要以新身份插回来）。 */
-      var plan=[], toSet=new Set();
-      gfix.forEach(function(f){
-        var rd=scan.ocr.map.get(f.from); if(!rd) return;
-        plan.push({ from:f.from, to:f.to, x:rd.x, y:rd.y, ang:rd.ang||0 });
-        toSet.add(f.to);
+    if(dlist.length){
+      dlist.sort(function(a,b){ return a.d-b.d; });
+      var usedR=new Set(), keep=[];
+      dlist.forEach(function(c){
+        if(usedR.has(c.read)) return;                    // 同一条读数只跟一个推算块冲突
+        usedR.add(c.read); keep.push(c);
       });
-      plan.forEach(function(p){
-        if(!toSet.has(p.from)) dropReading(p.from,true);  // 旧号记下角度再拉黑
-        scan.ocr.map.delete(p.from);
+      /* 同一处两个编号 → **采纳推算（网格位）那个号**：整块模式下网格映射整体可信，
+         错的是 OCR 那一位（628/626、476/776……实测推算侧是对的）。
+         处置是**原位换号**：删除读数列、把这条读数改成推算的号，位置/角度/comps 全沿用
+         ——不是删块，所以不会留空洞。
+         唯一的反例：读数的字母与编号自洽、推算的号反而落在该字母段外，
+         那说明推算偏了，保留读数。字母是分区校验位（D 段 751–1000 里不可能印 476）。 */
+      var zfix=[], kept=[];
+      keep.forEach(function(c){
+        var rd=scan.ocr.map.get(c.read);
+        var L=rd&&rd.letter, rOK=L?numInZone(L,c.read):true, iOK=L?numInZone(L,c.infer):true;
+        if(rd && !(rOK && !iOK) && !scan.ocr.map.has(c.infer)){
+          scan.ocr.map.delete(c.read);
+          if(scan.ocr.drop) scan.ocr.drop.delete(c.read);   // 换号不是删块：旧号别进黑名单
+          if(suspIdx) suspIdx.delete(c.read);
+          /* 原地换号：沿用这条读数自己的 comps / 角度 / svc 标记（换的是号，片没换）。
+             别用 insertReading 造一条「人工读数」——那会丢掉 comps，片宽算错，
+             拼好组跟着散架。 */
+          rd.idx=c.infer; rd.digits=fmt(c.infer); rd.zoneFix=c.read; rd.conf=1;
+          rd.letter=(L&&numInZone(L,c.infer))?L:zoneLetter(zoneOf(c.infer));
+          scan.ocr.map.set(c.infer, rd);
+          /* 记住「这个位置读出来过这个错号」：补漏/复核的 ROI 会犯同一个错
+             （476 改成 776 后，ROI 又把这块读成 476），不记下来就会被补回去。 */
+          if(!scan.zoneFixAt) scan.zoneFixAt=[];
+          scan.zoneFixAt.push({ old:c.read, x:rd.x, y:rd.y });
+          set.delete(c.read);                               // 同一块：读数号让位给网格号
+          if(inferredIdx) inferredIdx.delete(c.infer);      // 它现在是读数，不再是推算
+          if(inferredPos) delete inferredPos[c.infer];
+          zfix.push(c);
+        } else {
+          set.delete(c.infer);                              // 撤掉推算块：它和读数重合，不是两块
+          if(inferredIdx) inferredIdx.delete(c.infer);
+          if(inferredPos) delete inferredPos[c.infer];
+          kept.push(c);
+        }
       });
-      plan.forEach(function(p){
-        if(scan.ocr.map.has(p.to)) return;
-        insertReading(p.to, p.x, p.y);                    // 原位换成网格位给的号
-        var nr=scan.ocr.map.get(p.to); if(nr) nr.ang=p.ang;  // 角度沿用（丢了拼好组会散架）
-      });
-      scan.gridFix=gfix.map(function(f){ return f.from+"→"+f.to; });
-      scan.gridFixLog=(scan.gridFixLog||[]).concat(scan.gridFix);
-      if(!autoChain) toast("同一处两个编号：按网格位修正 "+gfix.length+" 处（"
-        +scan.gridFix.slice(0,3).join("、")+(gfix.length>3?"…":"")+"）");
-      recalcScan();                                      // 改完重算一遍（下一轮不再有冲突）
-      scan._adopting=false;
-      return;
+      if(inferredIdx) inferred=inferredIdx.size;
+      scan.dupFix=kept.map(function(c){ return { read:c.read, infer:c.infer }; });
+      if(zfix.length){
+        scan.zoneFixLog=(scan.zoneFixLog||[]).concat(zfix.map(function(c){
+          return c.read+"→"+c.infer; }));
+      }
     }
   }
   /* ---- 可疑点查重：结果里已经有这块 → 不用人工审 ----
@@ -1386,6 +1399,8 @@ function resetScan(keepImg,keepOcr){
   scan.weakDrop=[];                      // 人工「删掉这处提示」的二义位/漏读位
   scan.inferDrop=new Set();              // 人工删掉的推算块编号（不再推算）
   scan.gridFix=null; scan.gridFixLog=[]; // 「同一处两个编号」按网格位改号的记录
+  scan.zoneBad=null; scan.zoneFixLog=[]; // 字母与编号不符的读数 / 按分区纠正的记录
+  scan.zoneFixAt=[];                     // 判错换掉的号 + 位置（挡住 ROI 重复同一个误读）
   extLv=0;                               // 延伸档位归零（重新标定/换照片后按常规范围算）
   scan.gridAdj=false;                    // 人工微调过网格？（保持整块模式，别被自动裁决推翻）
   scan.suspAck=new Set();                       // 人工点过「无误」的可疑块
@@ -1637,7 +1652,7 @@ function dropReading(i,del){
 /* 手动补一块：OCR 漏读的片（尤其拼在簇边、垂直方向又解不出轴向的那块），
    由人点位置 + 输编号补成「伪读数」，之后并查集/局部网格会自动把它并进簇，
    组内双轴由此可解，周围漏读片跟着一起推出来。 */
-function insertReading(idx,ox,oy){
+function insertReading(idx,ox,oy,letter){
   var near=null, bd=1e9;
   scan.ocr.map.forEach(function(r){ var d=Math.hypot(r.x-ox,r.y-oy); if(d<bd){ bd=d; near=r; } });
   // 之前删掉的编号：沿用它的原角度（不然借最近读数的角度，拼好组会因角度不匹配散架）
@@ -1650,7 +1665,7 @@ function insertReading(idx,ox,oy){
     comps.push({ x0:ox+Math.cos(ang)*tl*0.5*t-1, y0:oy+Math.sin(ang)*tl*0.5*t-1, w:2, h:2 });
   }
   scan.ocr.map.set(idx, { idx:idx, x:ox, y:oy, ang:ang, conf:1, svc:false, manual:true,
-    comps:comps, letter:zoneLetter(zoneOf(idx)), digits:fmt(idx) });
+    comps:comps, letter:letter||zoneLetter(zoneOf(idx)), digits:fmt(idx) });
   if(scan.ocr.drop) scan.ocr.drop.delete(idx);      // 人工补回来 → 撤销「已删除」
   return true;
 }
@@ -1677,9 +1692,30 @@ function restoreReading(old,num,pt){
   if(num!==old && scan.ocr.map.has(num)){ toast("第 "+fmt(num)+" 块已经有读数了"); return false; }
   var kp=(scan.ocr.keep&&scan.ocr.keep[old])||null;
   var k=(scan.ocr&&scan.ocr.w)?(scan.W/scan.ocr.w):1;
-  var ox=kp?kp.x:(pt?pt.x/k:0), oy=kp?kp.y:(pt?pt.y/k:0);
+  /* 落点以**你点的那一块**为准：keep 里存的是当初 OCR 读到的坐标，和推算位是两回事
+     （用户：『别把推算出来的点和 OCR 出来的点当成同一张图』）。差一格以上就用点的位置，
+     角度仍然沿用 keep 里的原角度（丢了拼好组会散架）。 */
+  var ox, oy, ang0=kp?kp.ang:null;
+  if(pt && (!kp || Math.hypot(pt.x/k-kp.x, pt.y/k-kp.y) > (scanMedSide()||20))){
+    ox=pt.x/k; oy=pt.y/k;
+  } else { ox=kp?kp.x:0; oy=kp?kp.y:0; }
   if(num!==old) dropReading(old,true);        // 改成新号：旧号继续拉黑
+  /* 同一格别再留着推算块（277 补回来时那格推算成 777）：推算让位给人工补回的读数，
+     并且把它记进 inferDrop —— 否则下一轮它又推回来，跟人工结果反复打架。 */
+  if(scan.inferredPos){
+    var mside=(scanMedSide()||20);
+    Object.keys(scan.inferredPos).forEach(function(m){
+      var mi=+m, ip=scan.inferredPos[m];
+      if(Math.hypot(ip.x-ox, ip.y-oy) < mside*0.6){
+        delete scan.inferredPos[m];
+        if(scan.inferredIdx) scan.inferredIdx.delete(mi);
+        if(scan.result) scan.result.delete(mi);
+        if(mi!==num){ if(!scan.inferDrop) scan.inferDrop=new Set(); scan.inferDrop.add(mi); }
+      }
+    });
+  }
   insertReading(num,ox,oy);                   // 顺手把 num 从 ocr.drop 里去掉
+  var nr0=scan.ocr.map.get(num); if(nr0 && ang0!=null) nr0.ang=ang0;
   if(scan.inferDrop && scan.inferDrop.has(num)) scan.inferDrop.delete(num);
   recalcScan(); drawScan(); updateScanStats();
   if(scan.calibrated) scanCalTip();
@@ -1705,18 +1741,35 @@ function addManualReading(idx,sx,sy,noRecalc){
   return true;
 }
 
+/* 这个号是不是刚在附近被「字母与编号不符」判错换掉的？
+   补漏/复核的 ROI 会重复同一个误读（476 换成 776 后，ROI 又把这块读成 476），
+   按位置挡一下。只在附近挡、不全局拉黑——同一编号可能在照片别处真的存在。 */
+function zoneFixBlocks(idx,x,y,side){
+  var a=scan.zoneFixAt; if(!a||!a.length) return false;
+  var lim=Math.max(side||0,1)*1.1;
+  for(var i=0;i<a.length;i++){
+    if(a[i].old===idx && Math.hypot(a[i].x-x, a[i].y-y)<lim) return true;
+  }
+  return false;
+}
 /* ---- ROI 复核：把单块放大后单独送 PP-OCR ----
    整图 2×2 分片里编号字只有十几像素，det 直接漏检（85891 有 237/422 两块
    文字整句没检出）；按「0.72 片宽」裁一小块放大 3.2× 再识别，同一套模型
    就稳定读出来（实测 A-237@0.94、-422@0.98）。这是「二义位」的裁决手段：
    几何上 237/187 二选一时，让 OCR 直接投票。 */
+/* ROI 里抓编号：顺手把字母也带上。字母是分区校验位——D-476 这种（D 段 751–1000）
+   当场就能判错，不必等网格来裁决。抓不到字母就留空（不误杀）。 */
 function roiNums(text){
-  var out=[], m=String(text||"").match(/\d{2,5}/g)||[];
+  var out=[], s0=String(text||"");
+  var lm=s0.match(/([A-Za-z])[-–—\s]?(\d{3,4})/);
+  var letter=lm?lm[1].toUpperCase():null;
+  var m=s0.match(/\d{3,4}/g)||[];
   m.forEach(function(d){
     if(d.length===3) out.push(parseInt(d,10));
     else if(d.length===4){ out.push(parseInt(d.substr(0,3),10)); out.push(parseInt(d.substr(1,3),10)); }
   });
-  return out.filter(function(v){ return v>=1&&v<=S.cfg.total; });
+  return out.filter(function(v){ return v>=1&&v<=S.cfg.total; })
+            .map(function(v){ return { idx:v, letter:letter }; });
 }
 function roiOCR(x,y,side){
   return new Promise(function(resolve){
@@ -1739,7 +1792,8 @@ function roiOCR(x,y,side){
         .then(function(j){
           var out=[];
           (j.lines||[]).forEach(function(l){
-            roiNums(l.text).forEach(function(t){ out.push({idx:t,score:l.score||0,text:l.text}); });
+            roiNums(l.text).forEach(function(t){
+              out.push({ idx:t.idx, letter:t.letter, score:l.score||0, text:l.text }); });
           });
           resolve(out);
         }).catch(function(){ resolve([]); });
@@ -1775,6 +1829,8 @@ function recheckWeak(cb){
     roiOCR(w.x,w.y,w.side).then(function(rs){
       var best=null;
       rs.forEach(function(r){
+        if(r.letter && !numInZone(r.letter,r.idx)) return;    // 字母与编号自相矛盾：必错
+        if(zoneFixBlocks(r.idx,w.x,w.y,w.side)) return;       // 刚在这儿判错换掉的那个号
         if(w.cands.indexOf(r.idx)>=0 && (!best||r.score>best.score)) best=r;
       });
       if(best&&best.score>=0.45){
@@ -1892,7 +1948,9 @@ function fillGaps(cb){
         if(t.score<0.55) break;
         if(t.idx<1||t.idx>S.cfg.total) continue;
         if(scan.ocr.map.has(t.idx)) continue;
-        insertReading(t.idx, g.x, g.y);
+        if(t.letter && !numInZone(t.letter,t.idx)) continue;   // 字母与编号自相矛盾：必错
+        if(zoneFixBlocks(t.idx,g.x,g.y,g.side)) continue;      // 刚在这儿判错换掉的那个号
+        insertReading(t.idx, g.x, g.y, t.letter);
         got++; got1=true; g.solved=true;
         break;
       }
@@ -2175,6 +2233,14 @@ function updateScanStats(){
   set.forEach(function(i){ if(S.states[i]!==1) newly++; });
   scan.newCount=newly;
   scan.pendingSet=previewPendingSet();
+  /* 字母与编号不符的读数：片背字母是编号所在分区的重述，等于一条免费校验位。
+     区间一律由 total / zoneSize 推出来（zoneRangeOf），不写死 A-D 与具体数字。 */
+  scan.zoneBad=null;
+  if(scan.ocr && scan.ocr.map){
+    var zb=[];
+    scan.ocr.map.forEach(function(r,i){ if(!numInZone(r.letter,i)) zb.push(i); });
+    if(zb.length){ zb.sort(function(a,b){ return a-b; }); scan.zoneBad=zb; }
+  }
   $("scanFound").textContent=set.size;
   $("scanNew").textContent=newly;
   $("scanPend").textContent=scan.pendingSet.size;
@@ -2215,9 +2281,44 @@ function updateScanStats(){
       +(sp.length?('　'+sp.join("、")+"…"):'')+'</span>');
     parts.push(chips.join(""));
   }
+  if(scan.dupFix && scan.dupFix.length){
+    /* 同一处两个编号：默认已经自动采纳了推算（网格位）那个号。
+       还留在这里的是**没能自动换**的（网格位那个号在别处已经有读数了，不能抢），
+       画面上仍显示读数号 —— 点编号可以强行改过去（先确认别处那条是不是读错了）。 */
+    var ch=[];
+    scan.dupFix.slice(0,12).forEach(function(c){
+      ch.push('<span style="display:inline-flex;align-items:center;gap:4px;margin:3px 5px 0 0;'
+        +'padding:1px 6px;border-radius:6px;background:rgba(255,200,80,.14);color:#ffd05a">'
+        +'<span data-fix="'+c.read+'-'+c.infer+'" title="点一下：改用网格位的编号 '+fmt(c.infer)
+        +'" style="cursor:pointer;font-variant-numeric:tabular-nums">'+fmt(c.read)+'⇄'+fmt(c.infer)+'</span>'
+        +'</span>');
+    });
+    parts.push('<span style="color:#ffd05a">⚠同一处两个编号 '+scan.dupFix.length
+      +'（网格位的号在别处已有读数，先留着读数 · 点编号强行改用网格位'
+      +' · <b data-fixall style="cursor:pointer;color:#6cffb0">全部改用</b>）</span>');
+    parts.push(ch.join(""));
+  }
+  if(scan.zoneBad && scan.zoneBad.length){
+    var zc=[];
+    scan.zoneBad.slice(0,10).forEach(function(i){
+      var r=scan.ocr.map.get(i); if(!r) return;
+      var rg=zoneRangeOf(r.letter), L=r.letter||"?";
+      zc.push('<span style="display:inline-flex;align-items:center;gap:4px;margin:3px 5px 0 0;'
+        +'padding:1px 6px;border-radius:6px;background:rgba(255,110,110,.14);color:#ff9a9a">'
+        +'<span data-zone="'+i+'" title="跳到照片上这块；'+L+' 段是 '
+        +(rg?rg.lo+"–"+rg.hi:"?")+'，点黄框可改号" style="cursor:pointer;font-variant-numeric:tabular-nums">'
+        +L+'-'+fmt(i)+'</span></span>');
+    });
+    parts.push('<span style="color:#ff9a9a">⚠字母与编号不符 '+scan.zoneBad.length
+      +'（字母就是分区，编号必须落在该分区段内 · 点编号跳过去改）</span>');
+    parts.push(zc.join(""));
+  }
+  if(scan.zoneFixLog && scan.zoneFixLog.length){
+    parts.push('<span style="color:#8fa3bb">已按字母分区纠正 '+scan.zoneFixLog.length+' 处：'
+      +scan.zoneFixLog.slice(0,6).join("、")+(scan.zoneFixLog.length>6?"…":"")+'</span>');
+  }
   if(scan.gridFixLog && scan.gridFixLog.length){
-    // 「同一处两个编号」按网格位改号的结果（推算出来的为准，只换号不掉块）
-    parts.push('<span style="color:#ffd05a">同一处两个编号 → 已按网格位修正 '
+    parts.push('<span style="color:#8fa3bb">已按你的选择改用网格位编号 '
       +scan.gridFixLog.length+' 处：'+scan.gridFixLog.slice(0,6).join("、")
       +(scan.gridFixLog.length>6?"…":"")+'</span>');
   }
@@ -2249,10 +2350,55 @@ function updateScanStats(){
     bA.disabled=true; $("bApplyGuide").disabled=true;
   }
 }
+/* 「同一处两个编号」裁决：默认保留读数，这里改成网格位那个号（用户判断 OCR 读错时点）。
+   只换号、不动位置与角度 → 不产生空洞。 */
+function useGridNum(list){
+  var done=0;
+  (list||[]).forEach(function(c){
+    var rd=scan.ocr.map.get(c.read); if(!rd) return;
+    if(scan.ocr.map.has(c.infer) && c.infer!==c.read) return;   // 目标号另有读数：不抢
+    var L0=rd.letter;
+    dropReading(c.read,true);                                   // 旧号记角度 + 拉黑
+    scan.ocr.map.delete(c.read);
+    // 原地换号（沿用这条读数的 comps/角度，片没换）
+    rd.idx=c.infer; rd.digits=fmt(c.infer); rd.zoneFix=c.read; rd.conf=1;
+    rd.letter=(L0&&numInZone(L0,c.infer))?L0:zoneLetter(zoneOf(c.infer));
+    scan.ocr.map.set(c.infer, rd);
+    done++;
+  });
+  if(!done) return 0;
+  scan.gridFixLog=(scan.gridFixLog||[]).concat(list.slice(0,done).map(function(c){
+    return c.read+"→"+c.infer; }));
+  recalcScan(); drawScan(); updateScanStats();
+  return done;
+}
 /* 可疑块审核：点编号跳过去 / ✓ 无误 / ✕ 删掉（一次把 5 个过完，不用在照片上找） */
 $("scanGrpDetail").addEventListener("click",function(e){
-  var t=e.target.closest?e.target.closest("[data-ack],[data-del],[data-focus]"):null;
+  var t=e.target.closest?e.target.closest("[data-ack],[data-del],[data-focus],[data-fix],[data-fixall],[data-zone]"):null;
   if(!t||!scan.calibrated) return;
+  var znV=t.getAttribute("data-zone");
+  if(znV!=null){
+    var zi=+znV, zp=photoPosOf(zi), zk=scan.W/scan.ocr.w;
+    if(zp) scanFocusOn(zp.x*zk, zp.y*zk, 3.4);
+    var zr=scan.ocr.map.get(zi), zz=zoneRangeOf(zr&&zr.letter);
+    toast("第 "+zi+" 块："+(zr&&zr.letter?zr.letter:"?")+" 段是 "+(zz?zz.lo+"–"+zz.hi:"?")
+      +"，这个号不在段内 — 点黄框改号");
+    return;
+  }
+  var fxV=t.getAttribute("data-fix");
+  if(fxV!=null){
+    var ab=fxV.split("-");
+    var n0=useGridNum([{ read:+ab[0], infer:+ab[1] }]);
+    toast(n0 ? ("第 "+ab[0]+" 块已改用网格位的编号 "+ab[1])
+             : (scan.ocr.map.has(+ab[1]) ? ("第 "+ab[1]+" 块在别处已经有读数了，先去确认那一条")
+                                         : "这块改不了"));
+    return;
+  }
+  if(t.getAttribute("data-fixall")!=null){
+    var n1=useGridNum((scan.dupFix||[]).slice());
+    toast(n1? ("已全部改用网格位的编号（"+n1+" 处）") : "没有可改的（网格位的号都已被别处占用）");
+    return;
+  }
   var ackV=t.getAttribute("data-ack"), delV=t.getAttribute("data-del"), focV=t.getAttribute("data-focus");
   if(ackV!=null){
     scan.suspAck.add(+ackV); recalcScan(); drawScan();
@@ -2469,9 +2615,18 @@ function endScanPointer(e){
        浮层放大镜吃的是 **scan 工作坐标**（scan.W），必须乘 k 换算，
        否则采样点偏到画面外 → 预览是一片黑。 */
     var kk=(scan.ocr&&scan.ocr.w)?(scan.W/scan.ocr.w):1;
-    var pos=photoPosOf(d.cell);
-    var pt0=pos?{x:pos.x*kk, y:pos.y*kk}:{x:d.pt.x, y:d.pt.y};
+    /* 放大镜摆在**你点的那块**上。别用 photoPosOf 去查：它按编号查，而编号只此一个，
+       读数位与推算位会互相顶替——补点时就会弹出「之前 OCR 那个点」的原图。
+       只有这一格确实有这条读数时才用读数的坐标（那就是同一块）。 */
+    var rd0=scan.ocr?scan.ocr.map.get(d.cell):null;
+    var pt0=rd0?{x:rd0.x*kk, y:rd0.y*kk}:{x:d.pt.x, y:d.pt.y};
     if(scan.ocr && scan.ocr.map.has(d.cell)) openPick(pt0,e.clientX,e.clientY,false,null,d.cell);
+    /* 删掉一块后，那一格会立刻被推算成邻居的号（277 删了 → 777 顶上来）：再点它
+       就变成「推算块 777」，原来的号再也点不回来（用户：『补回 277/476，另一个地方
+       突然也出现了这两个点』）。所以先看看落点附近有没有刚删掉、位置还记着的编号
+       —— 有就优先给「补回来」。 */
+    else if(dropNear(pt0)!=null)
+      openPick(pt0,e.clientX,e.clientY,false,null,null,{restore:dropNear(pt0)});
     else if(scan.inferredPos && scan.inferredPos[d.cell])
       openPick(pt0,e.clientX,e.clientY,false,null,null,{inferred:d.cell});   // 推算块：只能删
     /* 删掉的块（读数进了 ocr.drop，或推算块进了 inferDrop）：以前这两条都不满足 →
@@ -2492,10 +2647,7 @@ function endScanPointer(e){
        会走到这里 —— 落点附近有已删除的编号时直接给「补回来」，不用重新输一遍。 */
     var dc=dropNear(d.addPt);
     if(dc!=null){
-      var kk2=(scan.ocr&&scan.ocr.w)?(scan.W/scan.ocr.w):1;
-      var pz=photoPosOf(dc);
-      var pt1=pz?{x:pz.x*kk2, y:pz.y*kk2}:{x:d.addPt.x, y:d.addPt.y};
-      openPick(pt1,e.clientX,e.clientY,false,null,null,{restore:dc});
+      openPick(d.addPt,e.clientX,e.clientY,false,null,null,{restore:dc});   // 原图用点的位置
     } else openPick(d.addPt,e.clientX,e.clientY,true, d.weak?d.weak.cands:null,null,
       d.weak?{weak:d.weak}:null);
   }
