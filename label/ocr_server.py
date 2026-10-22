@@ -149,6 +149,9 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(raw.decode("utf-8")) if raw[:1] == b"{" else {"img": raw.decode("utf-8", "ignore")}
             if req.get("file"):
                 arr = load_photo(req["file"])
+                if req.get("tile"):
+                    sx, sy, ex, ey = [int(v) for v in req["tile"]]
+                    arr = arr[max(0, sy):ey, max(0, sx):ex]
                 if req.get("roi"):
                     arr = crop_roi(arr, req["roi"])
             else:
