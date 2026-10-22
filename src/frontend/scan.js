@@ -297,11 +297,14 @@ function drawScanGrid(){
   var W=scan.W,H=scan.H;
   var bw=px*0.66, bh=py*0.66;
   var ocrMode=scan.ocr && scan.ocr.map.size>=2;
+  // 编号读取模式一律不画灰格底框：散块照片上网格映射是 garbage（画了干扰拼好组），
+  // 整块照片上格子被结果框/推算框铺满，灰格只是噪点。手动标定（非 OCR）才画。
+  var showGrid = !ocrMode;
   var GRP_COLORS=["rgba(80,200,255,.30)","rgba(255,170,80,.30)","rgba(200,120,255,.30)",
                   "rgba(120,255,200,.30)","rgba(255,120,180,.30)","rgba(200,255,90,.30)",
                   "rgba(140,160,255,.30)","rgba(255,220,90,.30)"];
   // 散块模式下网格框更淡（编号标注才是主角）
-  for(var i=1;i<=S.cfg.total;i++){
+  if(showGrid) for(var i=1;i<=S.cfg.total;i++){
     var p=idxToRC(i);
     var q=scanCellXY(p);
     var x=q.x, y=q.y;
@@ -559,6 +562,49 @@ function recalcScan(){
         }
       }
     });
+    // —— 整块照片检测：读数与全局网格映射吻合（中位残差 < 0.5 格距）——
+    // 整块拼图按网格摆放，自动标定可信；散块照片映射是 garbage（残差 10+ 格距），
+    // 物理上不可能误判。整块图不必逐格 OCR：前景在的格子编号由网格唯一确定，
+    // 直接推算入结果（蓝框）；有读数但偏离网格位 → 误读，标红（OCR 复核）。
+    var k=scan.W/scan.ocr.w;
+    var mp=(Math.abs(scan.pitchX)+Math.abs(scan.pitchY))/2;
+    var resid=[];
+    scan.ocr.map.forEach(function(r,idx){
+      if(r.conf<0.5||idx<1||idx>S.cfg.total) return;
+      var q=scanCellXY(idxToRC(idx));
+      resid.push(Math.hypot(q.x-r.x*k, q.y-r.y*k));
+    });
+    resid.sort(function(a,b){ return a-b; });
+    var medD=resid.length?resid[resid.length>>1]:1e9;
+    scan.blockMode = resid.length>=3 && medD < mp*0.5;
+    if(scan.blockMode){
+      // 整块统一文字方向：ang 周期 π，用 2θ 向量均值避免平均抵消
+      var sx=0, sy=0, na=0;
+      scan.ocr.map.forEach(function(r){
+        if(r.conf>=0.5 && isFinite(r.ang)){ sx+=Math.cos(2*r.ang); sy+=Math.sin(2*r.ang); na++; }
+      });
+      var blkAng = na ? 0.5*Math.atan2(sy,sx) : 0;
+      var rx=Math.abs(scan.pitchX)*0.26, ry=Math.abs(scan.pitchY)*0.26;
+      for(var i=1;i<=S.cfg.total;i++){
+        var p=idxToRC(i), q=scanCellXY(p), x=q.x, y=q.y;
+        if(x<rx||y<ry||x>scan.W-rx||y>scan.H-ry) continue;
+        var rd=scan.ocr.map.get(i);
+        var off = rd ? Math.hypot(rd.x*k-x, rd.y*k-y) : 0;
+        if(samplePiece(x,y,rx,ry)>0.55){
+          set.add(i);
+          if(rd && off>mp*0.55){                        // 前景在、读数却在别处 → 误读
+            if(!suspIdx.has(i)){ suspIdx.add(i); misread++;
+              if(suspPairs.length<4) suspPairs.push(i+"≠网格位"); }
+          } else if(!rd && !inferredIdx.has(i)){        // 前景在、无读数 → 推算
+            inferredIdx.add(i); inferred++;
+            inferredPos[i]={ x:x/k, y:y/k, ang:blkAng, side:mp/k };
+          }
+        } else if(rd && off>mp*0.55){                   // 前景不在、读数也偏 → 误读
+          if(!suspIdx.has(i)){ suspIdx.add(i); misread++;
+            if(suspPairs.length<4) suspPairs.push(i+"≠网格位"); }
+        }
+      }
+    }
     scan.reads=reads; scan.groups=groups; scan.grpMap=grpMap;
     scan.suspIdx=suspIdx.size?suspIdx:null;
     scan.suspPairs=suspPairs;
@@ -637,6 +683,7 @@ function computeScan(){
 function scanTipText(){
   return "识别 "+(scan.result?scan.result.size:0)+" 块"
     +(scan.ocr&&scan.ocr.map.size>=2?" · 编号读取模式":"")
+    +(scan.blockMode?" · 整块拼图":"")
     +(scan.groups&&scan.groups.length?" · 拼好组 "+scan.groups.length:"")
     +(scan.inferred?" · 拼好推算 "+scan.inferred:"")
     +(scan.suspIdx?(" · ⚠可疑 "+scan.suspIdx.size):"");
@@ -652,7 +699,7 @@ function resetScan(keepImg){
   scan.anchors=[]; scan.result=null; scan.cellsChecked=0; scan.picking=null;
   scan.calibrated=false;
   scan.rot=false;
-  scan.ocr=null; scan.ocrAuto=false;
+  scan.ocr=null; scan.ocrAuto=false; scan.blockMode=false;
   scan.reads=null; scan.groups=null; scan.grpMap=null;
   scan.suspIdx=null; scan.suspPairs=null;
   scan.inferred=0; scan.inferredIdx=null; scan.inferredPos=null;
