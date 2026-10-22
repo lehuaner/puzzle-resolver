@@ -3,7 +3,7 @@
  "photo": "85890.jpg",
  "width": 3072,
  "height": 4096,
- "updated": 1792665596959,
+ "updated": 1792666451193,
  "pieces": [
   {
    "box": {
@@ -14,8 +14,8 @@
     "ang": 0.04
    },
    "label": "B-314",
-   "conf": 0.9,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -26,8 +26,8 @@
     "ang": 0.054
    },
    "label": "B-312",
-   "conf": 0.9,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -38,8 +38,8 @@
     "ang": 0.049
    },
    "label": "B-288",
-   "conf": 0.87,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -50,8 +50,8 @@
     "ang": 0.025
    },
    "label": "B-339",
-   "conf": 0.87,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -62,8 +62,8 @@
     "ang": 0.056
    },
    "label": "B-286",
-   "conf": 0.84,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -74,8 +74,8 @@
     "ang": 0.042
    },
    "label": "B-338",
-   "conf": 0.84,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -86,8 +86,8 @@
     "ang": 0.022
    },
    "label": "B-363",
-   "conf": 0.84,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -98,8 +98,8 @@
     "ang": 0.063
    },
    "label": "B-340",
-   "conf": 0.84,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -110,8 +110,8 @@
     "ang": -0.016
    },
    "label": "B-337",
-   "conf": 0.83,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -122,20 +122,8 @@
     "ang": 0.006
    },
    "label": "B-311",
-   "conf": 0.81,
-   "src": "auto"
-  },
-  {
-   "box": {
-    "cx": 1972,
-    "cy": 2841,
-    "w": 465,
-    "h": 465,
-    "ang": -0.017
-   },
-   "label": "B-217",
-   "conf": 0.76,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -146,8 +134,44 @@
     "ang": 0.017
    },
    "label": "B-313",
-   "conf": 0.76,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
+  },
+  {
+   "box": {
+    "cx": 1974,
+    "cy": 2847,
+    "w": 442,
+    "h": 442,
+    "ang": -1.479
+   },
+   "label": "B-287",
+   "conf": 1,
+   "src": "manual"
+  },
+  {
+   "box": {
+    "cx": 1481,
+    "cy": 3221,
+    "w": 484,
+    "h": 484,
+    "ang": -1.508
+   },
+   "label": "B-263",
+   "conf": 0.66,
+   "src": "manual"
+  },
+  {
+   "box": {
+    "cx": 1957,
+    "cy": 3221,
+    "w": 480,
+    "h": 480,
+    "ang": -3.114
+   },
+   "label": "B-262",
+   "conf": 0.53,
+   "src": "manual"
   }
  ]
 }

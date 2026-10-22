@@ -71,6 +71,13 @@ input:focus{border-color:#3d6ea5;}
        border:1px solid var(--line); color:var(--tx); padding:9px 16px; border-radius:10px;
        font-size:13px; z-index:50; opacity:0; pointer-events:none; transition:opacity .2s;}
 #toast.on{opacity:1;}
+/* ---- 选中块照片预览浮窗 ---- */
+#peek{display:none; position:absolute; right:12px; bottom:12px; background:#0b0f14;
+      border:1px solid var(--line); border-radius:10px; padding:6px; z-index:15;
+      box-shadow:0 6px 24px rgba(0,0,0,.55);}
+#peek.on{display:block;}
+#peek canvas{display:block; border-radius:6px; background:#060a10;}
+#peekInfo{font:12px ui-monospace,Consolas,monospace; color:var(--sel); text-align:center; padding-top:4px;}
 </style>
 </head>
 <body>
@@ -91,7 +98,9 @@ input:focus{border-color:#3d6ea5;}
 </div>
 
 <div id="main">
-  <div id="stage"><canvas id="cv"></canvas></div>
+  <div id="stage"><canvas id="cv"></canvas>
+    <div id="peek"><canvas id="peekCv" width="236" height="236"></canvas><div id="peekInfo">—</div></div>
+  </div>
   <div id="side">
     <div class="hd"><span>块列表</span><span id="pCount">0</span></div>
     <div id="plist"></div>
@@ -167,27 +176,37 @@ stage.addEventListener("drop",function(e){
 });
 
 function openPhoto(file){
-  var url=URL.createObjectURL(file);
+  loadPhotoBlob(file, file.name, null);
+}
+// 统一照片加载入口：blob/file → img；prefetched 为历史点击时已读好的标注数据
+function loadPhotoBlob(blob, name, prefetched){
+  var url=URL.createObjectURL(blob);
   var img=new Image();
   img.onload=function(){
     URL.revokeObjectURL(url);
-    P.img=img; P.name=file.name; P.ow=img.width; P.oh=img.height;
-    var sc=Math.min(1, PW/Math.max(img.width,img.height));
-    P.W=Math.round(img.width*sc); P.H=Math.round(img.height*sc);
-    var pc=document.createElement("canvas");
-    pc.width=P.W; pc.height=P.H;
-    pc.getContext("2d").drawImage(img,0,0,P.W,P.H);
-    P.base=pc;
-    ocrK=P.W/Math.round(img.width*Math.min(1,3072/Math.max(img.width,img.height)));
-    var saved=loadLocal(P.name);
-    P.pieces=[]; P.nextId=1; P.sel=-1;
-    fitView();
-    if(saved){ applyData(saved); toast("已恢复历史标注 "+saved.pieces.length+" 块"); renderAll(); }
-    else { renderAll(); autoLabel(); }
+    // 照片本体缓存 IndexedDB：历史点击时可直接加载，不必再选文件
+    idbSet("img:"+name, blob).catch(function(){});
+    setupPhoto(img, name, prefetched);
   };
   img.onerror=function(){ toast("图片加载失败"); };
   img.src=url;
   histPending="";
+}
+async function setupPhoto(img, name, prefetched){
+  P.img=img; P.name=name; P.ow=img.width; P.oh=img.height;
+  var sc=Math.min(1, PW/Math.max(img.width,img.height));
+  P.W=Math.round(img.width*sc); P.H=Math.round(img.height*sc);
+  var pc=document.createElement("canvas");
+  pc.width=P.W; pc.height=P.H;
+  pc.getContext("2d").drawImage(img,0,0,P.W,P.H);
+  P.base=pc;
+  ocrK=P.W/Math.round(img.width*Math.min(1,3072/Math.max(img.width,img.height)));
+  // 数据优先级：历史点击预取 > 落库目录文件 > 本机旧缓存
+  var saved=prefetched || await loadFromDir(name) || loadLocal(name);
+  P.pieces=[]; P.nextId=1; P.sel=-1;
+  fitView();
+  if(saved){ applyData(saved); toast("已恢复标注 "+saved.pieces.length+" 块"); renderAll(); }
+  else { renderAll(); autoLabel(); }
 }
 
 /* ================= 块级连通域（亮前景） ================= */
@@ -367,8 +386,10 @@ function renderAll(){
   if(!P.base) { ctx.clearRect(0,0,cv.width,cv.height); return; }
   ctx.clearRect(0,0,P.W,P.H);
   ctx.drawImage(P.base,0,0);
-  P.pieces.forEach(function(p,i){ drawPiece(p,i,false); });
-  if(P.sel>=0&&P.pieces[P.sel]) drawPiece(P.pieces[P.sel],P.sel,true);
+  var anySel=P.sel>=0&&!!P.pieces[P.sel];
+  P.pieces.forEach(function(p,i){ drawPiece(p,i,false,anySel); });
+  if(anySel){ drawPiece(P.pieces[P.sel],P.sel,true,false); updatePeek(P.pieces[P.sel]); }
+  else $("peek").classList.remove("on");
   if(drag&&drag.drawing){
     // 拖拽显示为对角线（两端点），松手自动成旋转矩形
     ctx.strokeStyle="rgba(255,212,94,.95)"; ctx.lineWidth=Math.max(2,P.W/600);
@@ -411,20 +432,27 @@ function drawPiece(p,i,sel){
     ctx.setLineDash([]);
   }
   ctx.restore();
-  // 标签：旋转框最高点上方（水平书写，易读）
+  // 标签：旋转框最高点上方（水平书写）。密集场景防遮挡：
+  //  选中 = 完整信息（#序号 编号 conf）+ 深底衬；
+  //  未选中且未确认 = 只显示编号，小字号 + 半透明底衬；
+  //  已人工确认 = 不画文字，只留 ✓ 角标（信息在侧栏都有，把照片还给眼睛）。
   var hw=Math.abs(b.w*Math.cos(b.ang))+Math.abs(b.h*Math.sin(b.ang));
   var hh=Math.abs(b.w*Math.sin(b.ang))+Math.abs(b.h*Math.cos(b.ang));
   var topY=b.cy-hh/2;
-  var txt="#"+(i+1)+"  "+(p.label||"? ? ?");
-  var fs=Math.max(13,Math.min(26,P.W/60));
-  ctx.font="bold "+fs+"px ui-monospace,Consolas,monospace";
-  var tw=ctx.measureText(txt).width;
-  var ly=Math.max(fs+4,topY-6);
-  ctx.fillStyle="rgba(6,10,16,.78)";
-  ctx.fillRect(b.cx-tw/2-7,ly-fs-4,tw+14,fs+8);
-  ctx.fillStyle=col;
-  ctx.textBaseline="alphabetic"; ctx.textAlign="left";
-  ctx.fillText(txt,b.cx-tw/2,ly-2);
+  var confirmed=(p.src==="manual"&&p.label);
+  var showText = sel || (!confirmed && !!p.label);
+  var fs=sel?Math.max(13,Math.min(26,P.W/60)):Math.max(10,Math.min(16,P.W/95));
+  if(showText){
+    var txt=sel ? ("#"+(i+1)+"  "+(p.label||"? ? ?")) : p.label;
+    ctx.font="bold "+fs+"px ui-monospace,Consolas,monospace";
+    var tw=ctx.measureText(txt).width;
+    var ly=Math.max(fs+4,topY-6);
+    ctx.fillStyle=sel?"rgba(6,10,16,.82)":"rgba(6,10,16,.42)";
+    ctx.fillRect(b.cx-tw/2-5,ly-fs-3,tw+10,fs+6);
+    ctx.fillStyle=col;
+    ctx.textBaseline="alphabetic"; ctx.textAlign="left";
+    ctx.fillText(txt,b.cx-tw/2,ly-2);
+  }
   if(sel){
     // 旋转柄：顶中点向上伸出的圆点；缩放柄：右下角小方块（均在旋转坐标系里）
     ctx.save();
@@ -440,12 +468,20 @@ function drawPiece(p,i,sel){
     ctx.fillRect(b.w/2-hs/2, b.h/2-hs/2, hs, hs);
     ctx.strokeRect(b.w/2-hs/2, b.h/2-hs/2, hs, hs);
     ctx.restore();
+    // 选中块的 conf 补充到标签行（若有自动置信）
+    if(p.conf&&p.src!=="manual"){
+      ctx.fillStyle="rgba(255,255,255,.85)";
+      ctx.font="11px system-ui";
+      ctx.textAlign="center";
+      ctx.fillText((p.conf*100|0)+"%",b.cx,topY-fs-10);
+      ctx.textAlign="left";
+    }
   }
   // 人工确认小勾
-  if(p.src==="manual"&&!sel){
+  if(confirmed&&!sel){
     ctx.fillStyle="rgba(60,230,120,.95)";
-    ctx.font="bold "+(fs*0.8)+"px system-ui";
-    ctx.fillText("✓",b.cx+hw/2-fs*1.2,b.cy-hh/2+fs);
+    ctx.font="bold "+Math.max(11,P.W/130)+"px system-ui";
+    ctx.fillText("✓",b.cx+hw/2-Math.max(11,P.W/130)*1.2,b.cy-hh/2+Math.max(11,P.W/130));
   }
 }
 function updateStat(){
@@ -742,11 +778,27 @@ function saveSoon(){
   clearTimeout(saveT);
   saveT=setTimeout(function(){
     if(P.name&&P.pieces.length){
-      var d=dataNow();
-      localStorage.setItem(LS+P.name, JSON.stringify(d));
-      persistPhoto(P.name);        // 自动落库（已连接目录时写 .labels.json）
+      // 只落文件（落库目录）；不再写 localStorage
+      if(dirHandle) persistPhoto(P.name);
+      else if(!saveSoon.warned){
+        saveSoon.warned=true;
+        toast("点「💾 落库目录」选择保存位置（建议 label 文件夹），标注才能落盘",true);
+      }
     }
   },600);
+}
+function toLabelFn(name){
+  return String(name).replace(/[\\/:*?"<>|]/g,"_").replace(/\.[^.]+$/,"")+".labels.json";
+}
+// 从落库目录读某照片的标注（无目录/无权限/无文件 → null）
+async function loadFromDir(name){
+  if(!dirHandle) return null;
+  try{
+    var p=await dirHandle.queryPermission({mode:"readwrite"});
+    if(p!=="granted") return null;
+    var fh=await dirHandle.getFileHandle(toLabelFn(name));
+    return JSON.parse(await (await fh.getFile()).text());
+  }catch(err){ return null; }
 }
 function loadLocal(name){
   var s=localStorage.getItem(LS+name);
@@ -755,80 +807,124 @@ function loadLocal(name){
 }
 $("bHist").addEventListener("click",function(){ renderHist(); $("hist").classList.add("on"); });
 $("hClose").addEventListener("click",function(){ $("hist").classList.remove("on"); });
-function renderHist(){
+function histRow(name, d, src){
+  var man=0, emp=0;
+  (d.pieces||[]).forEach(function(p){ if(p.src==="manual")man++; if(!p.label)emp++; });
+  return { name:name, d:d, src:src, man:man, emp:emp };
+}
+async function renderHist(){
   var rows=[];
-  for(var i=0;i<localStorage.length;i++){
-    var k=localStorage.key(i);
-    if(k&&k.indexOf(LS)===0){
-      try{
-        var d=JSON.parse(localStorage.getItem(k));
-        var man=0,emp=0;
-        (d.pieces||[]).forEach(function(p){ if(p.src==="manual")man++; if(!p.label)emp++; });
-        rows.push({ name:k.slice(LS.length), d:d, man:man, emp:emp });
-      }catch(err){}
+  // 主源：落库目录里的 *.labels.json
+  if(dirHandle){
+    try{
+      var p=await dirHandle.queryPermission({mode:"readwrite"});
+      if(p==="granted"){
+        var names=[];
+        for await (var entry of dirHandle.values()){
+          if(entry.kind==="file" && /\.labels\.json$/i.test(entry.name)) names.push(entry.name);
+        }
+        for(var i=0;i<names.length;i++){
+          try{
+            var fh=await dirHandle.getFileHandle(names[i]);
+            var d=JSON.parse(await (await fh.getFile()).text());
+            if(d.pieces) rows.push(histRow(d.photo||names[i].replace(/\.labels\.json$/i,""), d, "dir"));
+          }catch(err){}
+        }
+      }
+    }catch(err){}
+  }
+  // 兜底：本机旧缓存（迁移前的数据）
+  if(!rows.length){
+    for(var k=0;k<localStorage.length;k++){
+      var key=localStorage.key(k);
+      if(key&&key.indexOf(LS)===0){
+        try{
+          var d2=JSON.parse(localStorage.getItem(key));
+          if(d2.pieces) rows.push(histRow(key.slice(LS.length), d2, "local"));
+        }catch(err){}
+      }
     }
   }
   rows.sort(function(a,b){ return b.d.updated-a.d.updated; });
-  $("hlist").innerHTML=rows.length?rows.map(function(r,idx){
-    return '<div class="hi" data-k="'+r.name+'"><span class="nm">'+r.name+'</span>'
+  $("hlist").innerHTML=rows.length?rows.map(function(r){
+    return '<div class="hi" data-k="'+r.name+'" data-src="'+r.src+'"><span class="nm">'+r.name+'</span>'
       +'<span class="meta">'+r.d.pieces.length+'块 ✓'+r.man+(r.emp?' <span style="color:var(--bad)">缺'+r.emp+'</span>':'')+' · '+fmtT(r.d.updated)+'</span>'
       +'<button class="del" data-del="'+r.name+'">🗑</button></div>';
   }).join(""):'<div class="hi"><span class="meta">暂无历史</span></div>';
 }
-$("hlist").addEventListener("click",function(e){
+$("hlist").addEventListener("click",async function(e){
   var del=e.target.dataset&&e.target.dataset.del;
   if(del){
-    if(confirm("删除 "+del+" 的本地标注历史？")){ localStorage.removeItem(LS+del); renderHist(); }
+    if(confirm("删除 "+del+" 的标注历史？")){
+      if(dirHandle){
+        try{
+          var p=await dirHandle.queryPermission({mode:"readwrite"});
+          if(p==="granted") await dirHandle.removeEntry(toLabelFn(del));
+        }catch(err){}
+      }
+      localStorage.removeItem(LS+del);
+      renderHist();
+    }
     return;
   }
   var el=e.target.closest?e.target.closest(".hi"):null; if(!el||!el.dataset.k) return;
   var name=el.dataset.k;
-  var d=loadLocal(name);
+  var d = el.dataset.src==="dir" ? await loadFromDir(name) : loadLocal(name);
   if(!d){ toast("历史数据损坏"); return; }
-  if(P.name===name){ applyData(d); renderAll(); $("hist").classList.remove("on"); toast("已载入 "+d.pieces.length+" 块"); }
-  else{
-    histPending=name;
+  if(P.name===name){
+    applyData(d); renderAll(); $("hist").classList.remove("on"); toast("已载入 "+d.pieces.length+" 块");
+    return;
+  }
+  // 照片缓存直接加载，不再让用户选文件
+  var blob=await idbGet("img:"+name).catch(function(){ return null; });
+  if(blob){
     $("hist").classList.remove("on");
-    toast("请选择照片文件："+name,true);
+    loadPhotoBlob(blob, name, d);
+  } else {
+    histPending=name; histPendingData=d;
+    $("hist").classList.remove("on");
+    toast("本机没有该照片缓存，请选择照片文件："+name,true);
     $("fApply").click();
   }
 });
+var histPendingData=null;
 $("fApply").addEventListener("change",function(e){
   var f=e.target.files&&e.target.files[0]; e.target.value="";
   if(!f||!histPending) return;
   if(f.name!==histPending){ toast("选的是 "+f.name+"，需要 "+histPending,true); return; }
-  var d=loadLocal(histPending); if(!d){ toast("历史数据损坏"); return; }
+  var d=histPendingData; histPendingData=null;
   var keep=histPending; histPending="";
-  // 走 openPhoto 流程，但跳过 autoLabel、直接应用 d
-  var url=URL.createObjectURL(f);
-  var img=new Image();
-  img.onload=function(){
-    URL.revokeObjectURL(url);
-    P.img=img; P.name=keep; P.ow=img.width; P.oh=img.height;
-    var sc=Math.min(1,PW/Math.max(img.width,img.height));
-    P.W=Math.round(img.width*sc); P.H=Math.round(img.height*sc);
-    var pc=document.createElement("canvas");
-    pc.width=P.W; pc.height=P.H;
-    pc.getContext("2d").drawImage(img,0,0,P.W,P.H);
-    P.base=pc;
-    ocrK=P.W/Math.round(img.width*Math.min(1,3072/Math.max(img.width,img.height)));
-    P.pieces=[]; P.nextId=1;
-    applyData(d);
-    renderAll(); fitView();
-    toast("已载入历史标注 "+P.pieces.length+" 块");
-  };
-  img.onerror=function(){ toast("图片加载失败"); };
-  img.src=url;
+  loadPhotoBlob(f, keep, d);
 });
 
 /* ================= 导出 ================= */
-$("bExport").addEventListener("click",function(){
-  if(P.name&&P.pieces.length) localStorage.setItem(LS+P.name, JSON.stringify(dataNow()));
-  var out={ version:1, exported:new Date().toISOString(), photos:{} };
-  for(var i=0;i<localStorage.length;i++){
-    var k=localStorage.key(i);
-    if(k&&k.indexOf(LS)===0){
-      try{ var d=JSON.parse(localStorage.getItem(k)); out.photos[k.slice(LS.length)]=d; }catch(err){}
+$("bExport").addEventListener("click",async function(){
+  if(P.name&&P.pieces.length) persistPhoto(P.name);
+  var out={ version:2, exported:new Date().toISOString(), photos:{} };
+  // 主源：落库目录文件
+  if(dirHandle){
+    try{
+      var p=await dirHandle.queryPermission({mode:"readwrite"});
+      if(p==="granted"){
+        var names=[];
+        for await (var entry of dirHandle.values()){
+          if(entry.kind==="file" && /\.labels\.json$/i.test(entry.name)) names.push(entry.name);
+        }
+        for(var i=0;i<names.length;i++){
+          try{
+            var fh=await dirHandle.getFileHandle(names[i]);
+            var d=JSON.parse(await (await fh.getFile()).text());
+            out.photos[d.photo||names[i].replace(/\.labels\.json$/i,"")]=d;
+          }catch(err){}
+        }
+      }
+    }catch(err){}
+  }
+  // 兜底：本机旧缓存
+  for(var k=0;k<localStorage.length;k++){
+    var key=localStorage.key(k);
+    if(key&&key.indexOf(LS)===0){
+      try{ var d2=JSON.parse(localStorage.getItem(key)); out.photos[key.slice(LS.length)]=d2; }catch(err){}
     }
   }
   var n=Object.keys(out.photos).length;
@@ -846,21 +942,41 @@ $("bExport").addEventListener("click",function(){
 
 /* ================= 导入 ================= */
 $("bImport").addEventListener("click",function(){ $("fJson").click(); });
-$("fJson").addEventListener("change",function(e){
+$("fJson").addEventListener("change",async function(e){
   var f=e.target.files&&e.target.files[0]; e.target.value="";
   if(!f) return;
   var fr=new FileReader();
-  fr.onload=function(){
+  fr.onload=async function(){
     var d;
     try{ d=JSON.parse(fr.result); }catch(err){ toast("JSON 解析失败"); return; }
     var ph=d.photos||{};
     if(!d.photos&&d.pieces&&d.photo) ph[d.photo]=d;   // 单照片格式也收
     var names=Object.keys(ph);
     if(!names.length){ toast("文件里没有标注数据"); return; }
-    names.forEach(function(nm){
-      localStorage.setItem(LS+nm, JSON.stringify(ph[nm]));
-    });
-    toast("已导入 "+names.length+" 张照片的标注"+(P.name&&ph[P.name]?"，当前照片已更新":""));
+    // 优先写落库目录文件；无目录时退回本机缓存
+    var wrote=0;
+    if(dirHandle){
+      try{
+        var p=await dirHandle.queryPermission({mode:"readwrite"});
+        if(p==="granted"){
+          for(var i=0;i<names.length;i++){
+            try{
+              var fh=await dirHandle.getFileHandle(toLabelFn(names[i]),{create:true});
+              var w=await fh.createWritable();
+              await w.write(JSON.stringify(ph[names[i]],null,1));
+              await w.close();
+              wrote++;
+            }catch(err){}
+          }
+        }
+      }catch(err){}
+    }
+    if(!wrote){
+      names.forEach(function(nm){ localStorage.setItem(LS+nm, JSON.stringify(ph[nm])); });
+      toast("已导入 "+names.length+" 条（未连接落库目录，暂存本机）",true);
+    } else {
+      toast("已导入 "+wrote+" 条到落库目录"+(P.name&&ph[P.name]?"，当前照片已更新":""));
+    }
     if(P.name&&ph[P.name]){ applyData(ph[P.name]); renderAll(); }
   };
   fr.readAsText(f);
@@ -929,7 +1045,41 @@ async function restoreDir(){
     dirHandle=h;
     var p=await h.queryPermission({mode:"readwrite"});
     setDirDot(p==="granted"?"on":"warn");
-    if(p==="granted") persistPhoto(P.name);
+    if(p==="granted"){
+      migrateLocal();
+      persistPhoto(P.name);
+    }
+  }catch(err){}
+}
+// 一次性迁移：本机 localStorage 旧历史 → 落库目录文件（updated 新者胜），迁移完清掉
+async function migrateLocal(){
+  try{
+    var p=await dirHandle.queryPermission({mode:"readwrite"});
+    if(p!=="granted") return;
+    var keys=[];
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i);
+      if(k&&k.indexOf(LS)===0) keys.push(k);
+    }
+    var moved=0;
+    for(var j=0;j<keys.length;j++){
+      var k2=keys[j];
+      var d; try{ d=JSON.parse(localStorage.getItem(k2)); }catch(err){ d=null; }
+      if(!d||!d.pieces){ localStorage.removeItem(k2); continue; }
+      var nm=d.photo||k2.slice(LS.length);
+      var ex=await loadFromDir(nm);
+      if(!ex || (d.updated||0)>(ex.updated||0)){
+        try{
+          var fh=await dirHandle.getFileHandle(toLabelFn(nm),{create:true});
+          var w=await fh.createWritable();
+          await w.write(JSON.stringify(d,null,1));
+          await w.close();
+          moved++;
+        }catch(err){}
+      }
+      localStorage.removeItem(k2);
+    }
+    if(moved) toast("已把 "+moved+" 条本机历史迁移到落库目录",true);
   }catch(err){}
 }
 async function persistPhoto(name){
@@ -937,8 +1087,7 @@ async function persistPhoto(name){
   try{
     var p=await dirHandle.queryPermission({mode:"readwrite"});
     if(p!=="granted"){ setDirDot("warn"); return; }
-    var fn=String(name).replace(/[\\/:*?"<>|]/g,"_").replace(/\.[^.]+$/,"")+".labels.json";
-    var fh=await dirHandle.getFileHandle(fn,{create:true});
+    var fh=await dirHandle.getFileHandle(toLabelFn(name),{create:true});
     var w=await fh.createWritable();
     await w.write(JSON.stringify(dataNow(),null,1));
     await w.close();
