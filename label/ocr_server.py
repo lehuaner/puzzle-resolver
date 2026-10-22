@@ -156,6 +156,8 @@ class Handler(BaseHTTPRequestHandler):
                 img_bytes = base64.b64decode(dataurl.split(",", 1)[-1])
                 arr = cv2.imdecode(np.frombuffer(img_bytes, np.uint8),
                                    cv2.IMREAD_COLOR)
+                if req.get("roi"):
+                    arr = crop_roi(arr, req["roi"])
             if arr is None:
                 self._json(400, {"error": "image decode failed"})
                 return
