@@ -80,6 +80,8 @@ input:focus{border-color:#3d6ea5;}
   <button id="bAuto">⚡ 自动标注</button>
   <button id="bExport" class="pri">⬇ 导出 JSON</button>
   <button id="bImport">⬆ 导入</button>
+  <button id="bDir">💾 落库目录</button>
+  <span id="dirDot" title="落库状态" style="width:9px;height:9px;border-radius:50%;background:#3a4656;display:inline-block"></span>
   <button id="bHist">🕘 历史</button>
   <span class="name" id="phName">未打开照片</span>
   <span id="stat"></span>
@@ -327,11 +329,13 @@ function layout(){
 }
 function zoomAt(cx,cy,nz){
   nz=Math.max(0.3,Math.min(12,nz));
-  var r=cv.getBoundingClientRect();
-  var px=(cx-r.left)/r.width, py=(cy-r.top)/r.height;
+  // 以 stage 中心为原点：屏幕点 ex = Δw·fit·zoom + ox（canvas 中心恒在 stage中心+o）
+  // 缩放后同一工作点不动 → ox' = ex - (ex-ox)·k，k=nz/zoom
+  var sr=stage.getBoundingClientRect();
+  var ex=cx-sr.left-sr.width/2, ey=cy-sr.top-sr.height/2;
   var k=nz/P.zoom;
-  P.ox=px*r.width - (px*r.width-P.ox)*k;
-  P.oy=py*r.height - (py*r.height-P.oy)*k;
+  P.ox=ex-(ex-P.ox)*k;
+  P.oy=ey-(ey-P.oy)*k;
   P.zoom=nz; layout();
 }
 $("bZoomIn").addEventListener("click",function(){ zoomAt(stage.clientWidth/2+stage.getBoundingClientRect().left, stage.clientHeight/2+stage.getBoundingClientRect().top, P.zoom*1.3); });
@@ -613,6 +617,9 @@ function endDrag(e){
 }
 cv.addEventListener("pointerup",endDrag);
 cv.addEventListener("pointercancel",function(){ drag=null; });
+// 中键按下会触发浏览器「自动滚动」，必须在 mousedown 阶段拦掉
+cv.addEventListener("mousedown",function(e){ if(e.button===1) e.preventDefault(); });
+cv.addEventListener("auxclick",function(e){ if(e.button===1) e.preventDefault(); });
 
 /* ================= 历史（localStorage） ================= */
 var LS="plabel:";
@@ -653,7 +660,11 @@ var saveT=null;
 function saveSoon(){
   clearTimeout(saveT);
   saveT=setTimeout(function(){
-    if(P.name&&P.pieces.length) localStorage.setItem(LS+P.name, JSON.stringify(dataNow()));
+    if(P.name&&P.pieces.length){
+      var d=dataNow();
+      localStorage.setItem(LS+P.name, JSON.stringify(d));
+      persistPhoto(P.name);        // 自动落库（已连接目录时写 .labels.json）
+    }
   },600);
 }
 function loadLocal(name){
@@ -774,7 +785,90 @@ $("fJson").addEventListener("change",function(e){
   fr.readAsText(f);
 });
 
+/* ================= 自动落库（File System Access） =================
+   选一次目录后，每张图的标注改动自动写成 <照片名>.labels.json（与导出同格式）。
+   handle 存 IndexedDB；刷新后若权限仍在则全自动，否则点一下「落库目录」重新授权。 */
+var dirHandle=null;
+function idbOpen(){
+  return new Promise(function(res,rej){
+    var r=indexedDB.open("plabel",1);
+    r.onupgradeneeded=function(){ r.result.createObjectStore("kv"); };
+    r.onsuccess=function(){ res(r.result); };
+    r.onerror=function(){ rej(r.error); };
+  });
+}
+function idbSet(k,v){
+  return idbOpen().then(function(db){
+    return new Promise(function(res,rej){
+      var tx=db.transaction("kv","readwrite");
+      tx.objectStore("kv").put(v,k);
+      tx.oncomplete=res; tx.onerror=function(){ rej(tx.error); };
+    });
+  });
+}
+function idbGet(k){
+  return idbOpen().then(function(db){
+    return new Promise(function(res,rej){
+      var req=db.transaction("kv").objectStore("kv").get(k);
+      req.onsuccess=function(){ res(req.result); };
+      req.onerror=function(){ rej(req.error); };
+    });
+  });
+}
+function setDirDot(state){
+  var d=$("dirDot");
+  d.style.background = state==="on" ? "var(--ok)" : (state==="warn" ? "var(--warn)" : "#3a4656");
+}
+var fsSupported = typeof window.showDirectoryPicker==="function";
+if(!fsSupported) $("bDir").style.display="none";
+
+$("bDir").addEventListener("click",async function(){
+  try{
+    if(dirHandle){
+      var p=await dirHandle.queryPermission({mode:"readwrite"});
+      if(p!=="granted") p=await dirHandle.requestPermission({mode:"readwrite"});
+      if(p==="granted"){ setDirDot("on"); toast("落库目录已连接："+dirHandle.name); persistPhoto(P.name); return; }
+    }
+    var h=await showDirectoryPicker({mode:"readwrite"});
+    dirHandle=h;
+    await idbSet("dirHandle",h);
+    setDirDot("on");
+    toast("已选择落库目录："+h.name+" · 每张图标注将自动保存为 .labels.json",true);
+    persistPhoto(P.name);
+  }catch(err){
+    if(err&&err.name==="AbortError") return;
+    toast("落库目录不可用："+(err&&err.message||err));
+  }
+});
+async function restoreDir(){
+  if(!fsSupported) return;
+  try{
+    var h=await idbGet("dirHandle");
+    if(!h) return;
+    dirHandle=h;
+    var p=await h.queryPermission({mode:"readwrite"});
+    setDirDot(p==="granted"?"on":"warn");
+    if(p==="granted") persistPhoto(P.name);
+  }catch(err){}
+}
+async function persistPhoto(name){
+  if(!dirHandle||!name||!P.pieces.length) return;
+  try{
+    var p=await dirHandle.queryPermission({mode:"readwrite"});
+    if(p!=="granted"){ setDirDot("warn"); return; }
+    var fn=String(name).replace(/[\\/:*?"<>|]/g,"_").replace(/\.[^.]+$/,"")+".labels.json";
+    var fh=await dirHandle.getFileHandle(fn,{create:true});
+    var w=await fh.createWritable();
+    await w.write(JSON.stringify(dataNow(),null,1));
+    await w.close();
+    setDirDot("on");
+  }catch(err){
+    setDirDot("warn");
+  }
+}
+
 /* ================= 启动 ================= */
+restoreDir();
 document.addEventListener("keydown",function(e){
   if(document.activeElement===$("edLabel")) return;
   if(e.key==="Escape"){ selectPiece(-1); $("hist").classList.remove("on"); }
