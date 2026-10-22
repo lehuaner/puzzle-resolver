@@ -26,6 +26,94 @@ window.__scan=scan;    // 调试/E2E 钩子（与 window.__ocr 同模式）
 var GRP_TXT=["#6ec8ff","#ffb050","#d878ff","#78ffd0","#ff78b8","#d0ff5a","#8ca0ff","#ffdc5a"]; // 拼好组文字色
 var scanCanvas=$("scanCanvas"), scanCtx=null;
 
+/* ---- PP-OCR 高精度服务（可选，与标注台同一服务，127.0.0.1:8849）----
+   服务端已带 CORS；未启动时自动回退内置模板 OCR。 */
+var OSVC={ host:(function(){ try{ return localStorage.getItem("scanOsvcHost")||"http://127.0.0.1:8849"; }catch(err){ return "http://127.0.0.1:8849"; } })(),
+           ok:false, checking:false };
+function osvcBadge(){
+  var d=$("osvcDot"), st=$("osvcState");
+  if(!d) return;
+  d.style.background=OSVC.ok?"#3ddc84":"#3a4656";
+  st.textContent=OSVC.ok?"已连接":"未连接";
+  st.style.color=OSVC.ok?"var(--ok, #3ddc84)":"";
+}
+function osvcProbe(){
+  if(OSVC.checking) return;
+  OSVC.checking=true;
+  var ctl=new AbortController(), t=setTimeout(function(){ ctl.abort(); },1500);
+  fetch(OSVC.host+"/health",{signal:ctl.signal})
+    .then(function(r){ return r.json(); })
+    .then(function(j){ OSVC.ok=!!j.ok; })
+    .catch(function(){ OSVC.ok=false; })
+    .then(function(){ OSVC.checking=false; clearTimeout(t); osvcBadge(); });
+}
+// "B-241"/"B241"/"B—241"/"7-793"（首字符非 A-D）→ {letter,digits}；纯数字不认（防噪声）
+function parseNumText(t){
+  if(!t) return null;
+  var s0=String(t).replace(/\s+/g,"");
+  var m=s0.match(/([A-Da-d])[-–—]?(\d{2,4})(?!\d)/);
+  if(m) return { letter:m[1].toUpperCase(), digits:m[2] };
+  var m2=s0.match(/^.\s*[-–—]\s*(\d{2,4})(?!\d)/);
+  if(m2) return { letter:"", digits:m2[1] };
+  return null;
+}
+/* 整图 → 服务读数（2×2 重叠分片：整图推理字符相对太小 det 会漏检）。
+   返回与 detectNumbers 同构的读数（3072 尺度，ang=行框长边方向）。 */
+function svcReadings(img){
+  var W=img.width, H=img.height;
+  var s=Math.round(W*Math.min(1,3072/Math.max(W,H)))/W;   // 原图 → OCR 尺度
+  var ov=Math.round(Math.max(W,H)*0.06);                   // 6% 重叠防切在编号上
+  var hw=Math.floor(W/2), hh=Math.floor(H/2);
+  var tiles=[[0,0,hw+ov,hh+ov],[hw-ov,0,W,hh+ov],[0,hh-ov,hw+ov,H],[hw-ov,hh-ov,W,H]];
+  var out=[], seenC=[], chain=Promise.resolve();
+  tiles.forEach(function(t){
+    chain=chain.then(function(){
+      var sx=Math.max(0,t[0]), sy=Math.max(0,t[1]);
+      var ex=Math.min(W,t[2]), ey=Math.min(H,t[3]);
+      if(ex-sx<40||ey-sy<40) return;
+      var c=document.createElement("canvas"); c.width=ex-sx; c.height=ey-sy;
+      c.getContext("2d").drawImage(img, sx,sy,ex-sx,ey-sy, 0,0,ex-sx,ey-sy);
+      return fetch(OSVC.host+"/ocr",{ method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({img:c.toDataURL("image/jpeg",0.92)}) })
+        .then(function(r){ return r.json(); })
+        .then(function(j){
+          if(j.error) throw new Error(j.error);
+          (j.lines||[]).forEach(function(l){
+            var num=parseNumText(l.text);
+            if(!num||!l.box||l.box.length<3) return;
+            var xs=l.box.map(function(p){ return p[0]+sx; }),
+                ys=l.box.map(function(p){ return p[1]+sy; });
+            var cx=(Math.min.apply(0,xs)+Math.max.apply(0,xs))/2;
+            var cy=(Math.min.apply(0,ys)+Math.max.apply(0,ys))/2;
+            for(var si=0;si<seenC.length;si++){
+              var dx=seenC[si][0]-cx, dy=seenC[si][1]-cy;
+              if(dx*dx+dy*dy<6400) return;              // 重叠区同一行去重（<80px）
+            }
+            seenC.push([cx,cy]);
+            var digits=num.digits, idx=parseInt(digits,10);
+            if(isNaN(idx)||digits.length<3||idx<1||idx>S.cfg.total) return;
+            var d1=Math.hypot(l.box[1][0]-l.box[0][0], l.box[1][1]-l.box[0][1]);
+            var d2=Math.hypot(l.box[2][0]-l.box[1][0], l.box[2][1]-l.box[1][1]);
+            var ang=d1>=d2
+              ? Math.atan2(l.box[1][1]-l.box[0][1], l.box[1][0]-l.box[0][0])
+              : Math.atan2(l.box[2][1]-l.box[1][1], l.box[2][0]-l.box[1][0]);
+            var tl=(d1>=d2?d1:d2)*s;
+            // 合成 comps：沿 ang 跨 0.675×tl → readingSide 的 0.27 比例折出 ≈2.5×文本宽的片宽
+            var T=tl*0.675, cs=Math.cos(ang), sn=Math.sin(ang), comps=[];
+            for(var i=0;i<5;i++){
+              var ccx=cx*s+(i-2)*T/4*cs, ccy=cy*s+(i-2)*T/4*sn;
+              comps.push({x0:ccx-3, y0:ccy-6, w:6, h:12});
+            }
+            out.push({ letter:(num.letter||zoneLetter(zoneOf(idx))), digits:digits,
+                       idx:idx, conf:l.score, x:cx*s, y:cy*s, ang:ang, n:5, svc:true, comps:comps });
+          });
+        });
+    });
+  });
+  return chain.then(function(){ return out; });
+}
+
 function otsu(g){
   var hist=new Array(256).fill(0), n=g.length;
   for(var i=0;i<n;i++) hist[g[i]]++;
@@ -244,7 +332,7 @@ function drawScanGrid(){
       if(!scan.result.has(rd.idx)) return;
       var x=rd.x*k2, y=rd.y*k2;
       if(x<-60||y<-60||x>W+60||y>H+60) return;
-      var side=Math.max(40,Math.min(240,rd.tl/0.27))*k2;
+      var side=readingSide(rd)*k2;
       var susp=scan.suspIdx && scan.suspIdx.has(rd.idx);
       var gi=scan.grpMap ? scan.grpMap[rd.idx] : null;
       scanCtx.fillStyle = susp ? "rgba(255,90,90,.30)"
@@ -264,7 +352,32 @@ function drawScanGrid(){
       if(x<-40||y<-40||x>W+40||y>H+40) return;
       var good=r.conf>=0.65, mid=r.conf>=0.5;
       var col=good?"rgba(60,255,140,.95)":(mid?"rgba(255,198,40,.95)":"rgba(160,175,195,.6)");
-      // 编号文字底衬
+      // 片位置小十字
+      scanCtx.strokeStyle=col; scanCtx.lineWidth=1.4;
+      scanCtx.beginPath();
+      scanCtx.moveTo(x-6,y); scanCtx.lineTo(x+6,y);
+      scanCtx.moveTo(x,y-6); scanCtx.lineTo(x,y+6);
+      scanCtx.stroke();
+      // 方向针：编号文本行方向（读数 ang），箭头指向阅读方向——
+      // 拼好组的「文本平行」判据就靠它，平行针=同簇方向
+      if(mid && isFinite(r.ang)){
+        var side=readingSide(r)*k, L=side*0.5;
+        if(L>8){
+          var dx=Math.cos(r.ang), dy=Math.sin(r.ang);
+          scanCtx.lineWidth=1.8;
+          scanCtx.beginPath();
+          scanCtx.moveTo(x-dx*L, y-dy*L); scanCtx.lineTo(x+dx*L, y+dy*L);
+          scanCtx.stroke();
+          var bx=Math.PI+r.ang;                        // 箭头两翼
+          scanCtx.beginPath();
+          scanCtx.moveTo(x+dx*L, y+dy*L);
+          scanCtx.lineTo(x+dx*L+7*Math.cos(bx-0.45), y+dy*L+7*Math.sin(bx-0.45));
+          scanCtx.moveTo(x+dx*L, y+dy*L);
+          scanCtx.lineTo(x+dx*L+7*Math.cos(bx+0.45), y+dy*L+7*Math.sin(bx+0.45));
+          scanCtx.stroke();
+        }
+      }
+      // 编号文字底衬（最后画，压住针线）
       var label=r.letter+"-"+r.digits;
       scanCtx.font="bold 15px monospace";
       var tw=scanCtx.measureText(label).width;
@@ -273,14 +386,22 @@ function drawScanGrid(){
       scanCtx.fillStyle=col;
       scanCtx.textAlign="center"; scanCtx.textBaseline="middle";
       scanCtx.fillText(label, x, y-22);
-      // 片位置小十字
-      scanCtx.strokeStyle=col; scanCtx.lineWidth=1.4;
-      scanCtx.beginPath();
-      scanCtx.moveTo(x-6,y); scanCtx.lineTo(x+6,y);
-      scanCtx.moveTo(x,y-6); scanCtx.lineTo(x,y+6);
-      scanCtx.stroke();
     });
   }
+}
+
+/* 读数文本行长度：comps 中心沿 ang 方向的投影跨度；片宽经验折算 tl/0.27 */
+function readingTl(r){
+  var th=r.ang||0, cs=Math.cos(th), sn=Math.sin(th), mn=1e9, mx=-1e9;
+  (r.comps||[]).forEach(function(c){
+    var a=(c.x0+c.w/2)*cs+(c.y0+c.h/2)*sn;
+    if(a<mn)mn=a; if(a>mx)mx=a;
+  });
+  return mx>mn ? mx-mn : 0;
+}
+function readingSide(r){
+  var tl = (typeof r.tl==="number" && r.tl>0) ? r.tl : readingTl(r);   // reads 数组已存 tl
+  return tl>0 ? Math.max(40,Math.min(240,tl/0.27)) : 0;
 }
 
 function recalcScan(){
@@ -301,14 +422,9 @@ function recalcScan(){
     var reads=[];
     scan.ocr.map.forEach(function(r,idx){
       if(r.conf<0.5||r.idx<1||r.idx>S.cfg.total) return;
-      var th=r.ang||0, cs=Math.cos(th), sn=Math.sin(th), mn=1e9, mx=-1e9;
-      (r.comps||[]).forEach(function(c){
-        var a=(c.x0+c.w/2)*cs+(c.y0+c.h/2)*sn;
-        if(a<mn)mn=a; if(a>mx)mx=a;
-      });
-      if(mx>mn) reads.push({idx:idx,x:r.x,y:r.y,ang:th,tl:mx-mn});
+      var tl=readingTl(r);
+      if(tl>0) reads.push({idx:idx,x:r.x,y:r.y,ang:r.ang||0,tl:tl,svc:!!r.svc});
     });
-    var sideOf=function(tl){ return Math.max(40,Math.min(240,tl/0.27)); };  // 文本长→片宽（经验比 0.27）
     var parent={};
     function find(x){ while(parent[x]!==x){ parent[x]=parent[parent[x]]; x=parent[x]; } return x; }
     reads.forEach(function(r){ parent[r.idx]=r.idx; });
@@ -316,10 +432,11 @@ function recalcScan(){
     for(var a=0;a<reads.length;a++)for(var b=a+1;b<reads.length;b++){
       var ra=reads[a], rb=reads[b];
       var d=Math.hypot(ra.x-rb.x, ra.y-rb.y);
-      var side=Math.min(sideOf(ra.tl), sideOf(rb.tl));
+      var side=Math.min(readingSide(ra), readingSide(rb));
       if(d<side*0.7||d>side*1.5) continue;             // 不是一片宽的近邻（1.4≈对角贴片）
       var dth=Math.abs(ra.ang-rb.ang)*180/Math.PI%180; if(dth>90) dth=180-dth;
-      if(dth>20) continue;                             // 文本不平行 → 不是同一簇
+      if(ra.svc||rb.svc){ if(dth>45) dth=90-dth; }     // PP-OCR 框角带 90° 歧义（det 点序），按轴系折叠
+      if(dth>20) continue;                             // 文本轴不平行 → 不是同一簇
       var psi=Math.atan2(rb.y-ra.y, rb.x-ra.x)-ra.ang;
       var axv=Math.max(Math.abs(Math.cos(psi)), Math.abs(Math.sin(psi)));
       if(axv<0.65) continue;                           // 相对向量明显偏离横/竖轴
@@ -470,11 +587,16 @@ $("bScan").addEventListener("click",function(){
   hideLocCard();
   $("ovScan").classList.add("on");
   scanHelpSync();               // 每次打开都回到「说明默认收起」
+  osvcProbe();                  // 探测 PP-OCR 服务状态
   if(!scan.img){ resetScan(false); }
   else { drawScan(); }
   setTimeout(drawScan,60);
 });
 $("scanClose").addEventListener("click",function(){ $("ovScan").classList.remove("on"); });
+$("osvcBadge").addEventListener("click",function(){
+  osvcProbe();
+  toast(OSVC.ok?"OCR：PP-OCR 高精度（服务已连接）":"正在检测 PP-OCR 服务（127.0.0.1:8849）…");
+});
 $("bPickImg").addEventListener("click",function(){ $("fImg").click(); });
 $("fImg").addEventListener("change",function(e){
   var f=e.target.files&&e.target.files[0]; if(!f) return;
@@ -489,25 +611,41 @@ $("fImg").addEventListener("change",function(e){
         $("scanTip").textContent="正在读取片上编号…";
         drawScan();
         // 自动 OCR：编号识别 → 散块模式 + 自动标定（失败回退手点）
+        // PP-OCR 服务在线时优先用它（召回远高于内置模板），失败/空结果回退模板
         setTimeout(function(){
-          try{
-            var res=detectNumbers(img);
-            var ok=res.filter(function(r){ return r.conf>=0.5 && r.n>=4 && r.idx>=1 && r.idx<=S.cfg.total; });
-            scan.ocr={ results:res, map:new Map(), w:Math.round(img.width*Math.min(1,3072/Math.max(img.width,img.height))),
-                       h:Math.round(img.height*Math.min(1,3072/Math.max(img.width,img.height))) };
-            ok.forEach(function(r){ if(!scan.ocr.map.has(r.idx)) scan.ocr.map.set(r.idx,r); });
-            if(ok.length>=2 && autoCalibrate(ok)) {
-              toast("已自动识别 "+ok.length+" 个编号");
-            } else {
-              scan.ocrAuto=false;
-              $("scanTip").textContent=ok.length
-                ? "读到 "+ok.length+" 个编号但不足以自动标定，请手动点两块拼图中心"
-                : "未读到编号，请点两块拼图的中心（并输入编号）";
+          function done(res){
+            try{
+              var ok=res.filter(function(r){ return r.conf>=0.5 && r.n>=4 && r.idx>=1 && r.idx<=S.cfg.total; });
+              scan.ocr={ results:res, map:new Map(), w:Math.round(img.width*Math.min(1,3072/Math.max(img.width,img.height))),
+                         h:Math.round(img.height*Math.min(1,3072/Math.max(img.width,img.height))) };
+              ok.forEach(function(r){ if(!scan.ocr.map.has(r.idx)) scan.ocr.map.set(r.idx,r); });
+              if(ok.length>=2 && autoCalibrate(ok)) {
+                toast("已自动识别 "+ok.length+" 个编号"+(ok.some(function(r){return r.svc;})?"（PP-OCR）":""));
+              } else {
+                scan.ocrAuto=false;
+                $("scanTip").textContent=ok.length
+                  ? "读到 "+ok.length+" 个编号但不足以自动标定，请手动点两块拼图中心"
+                  : "未读到编号，请点两块拼图的中心（并输入编号）";
+              }
+              drawScan();
+            }catch(err){
+              $("scanTip").textContent="自动识别失败，请点两块拼图的中心（并输入编号）";
             }
-            drawScan();
-          }catch(err){
-            $("scanTip").textContent="自动识别失败，请点两块拼图的中心（并输入编号）";
           }
+          function tmpl(){
+            try{ return detectNumbers(img)||[]; }catch(err){ return []; }
+          }
+          if(OSVC.ok){
+            $("scanTip").textContent="PP-OCR 高精度识别中…（2×2 分片）";
+            svcReadings(img).then(function(res){
+              if(res.length) done(res);
+              else { toast("PP-OCR 未读到编号，改用内置模板"); done(tmpl()); }
+            }).catch(function(err){
+              OSVC.ok=false; osvcBadge();
+              toast("PP-OCR 服务调用失败，回退内置模板");
+              done(tmpl());
+            });
+          } else done(tmpl());
         },40);
       });
     },40);

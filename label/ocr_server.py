@@ -34,8 +34,9 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8849
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_.\-]+$")   # 只允许纯文件名，防路径穿越
 
-_ocr = None
-_ocr_lock = threading.Lock()
+_ocr = None        # 主引擎：只跑 det+cls+rec 全管线。rapidocr 3.9.2 实测 bug：
+_ocr_rec = None    #   对同一实例调一次 use_det=False 的 rec-only，之后全管线调用永久
+_ocr_lock = threading.Lock()   #   退化成单行垃圾（不可恢复）。故 rec-only 用独立实例。
 _ready = False
 
 
@@ -48,6 +49,15 @@ def get_ocr():
     return _ocr
 
 
+def get_rec():
+    """兜底 rec-only 专用引擎，绝不跑全管线；主引擎绝不跑 rec-only。"""
+    global _ocr_rec
+    if _ocr_rec is None:
+        from rapidocr import RapidOCR
+        _ocr_rec = RapidOCR()
+    return _ocr_rec
+
+
 def warmup():
     """启动即跑一张小图，把 det/cls/rec 模型全部加载到位。"""
     global _ready
@@ -56,8 +66,8 @@ def warmup():
         cv2.putText(blank, "B-123", (40, 200), cv2.FONT_HERSHEY_SIMPLEX,
                     3.0, (30, 30, 30), 8, cv2.LINE_AA)
         get_ocr()(blank)
-        # rec-only 路径（fallback_rec 用）也预热一次
-        get_ocr()(blank, use_det=False, use_cls=False)
+        # rec-only 路径（fallback_rec 用）在独立引擎上预热
+        get_rec()(blank, use_det=False, use_cls=False)
         _ready = True
         print("[ocr_server] warmup OK, listening on http://127.0.0.1:%d" % PORT)
     except Exception as e:  # noqa: BLE001
@@ -71,7 +81,7 @@ def fallback_rec(img):
     """det 兜底：白块上的淡印刷小字 PP-OCR det 常漏检（det 把白块本体误检成
     文本行，真编号反而漏掉，实测 85891 的 D-773）。改走：亮域定位块本体 →
     块内滑动横条带 → rec-only 紧凑识别（rec 对紧凑条带一喂即中，实测 0.96）。
-    返回 [(text, score), ...]。"""
+    返回 [(text, score, bbox), ...]，bbox=块本体 (x,y,w,h)（粗定位用）。"""
     g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     _, bm = cv2.threshold(g, 160, 255, cv2.THRESH_BINARY)
     n, lab, stats, _ = cv2.connectedComponentsWithStats(bm)
@@ -81,10 +91,11 @@ def fallback_rec(img):
     x, y, w, h = [int(v) for v in stats[big, :4]]
     if w < 40 or h < 40:
         return []
+    bbox = (x, y, w, h)
     bh = int(min(max(h * 0.26, 30), 130))
     bw = int(w * 0.92)
     x0 = x + max(0, (w - bw) // 2)
-    eng = get_ocr()
+    eng = get_rec()   # rec-only 专用引擎（use_det=False 会污染主引擎）
     H, W = img.shape[:2]
     out = []
     steps = 5
@@ -106,7 +117,7 @@ def fallback_rec(img):
                 for t, s in zip(r.txts, r.scores):
                     t = str(t).strip()
                     if t:
-                        out.append((t, float(s)))
+                        out.append((t, float(s), bbox))
     return out
 
 
@@ -234,8 +245,10 @@ class Handler(BaseHTTPRequestHandler):
                        for l in lines):
                 with _ocr_lock:
                     fb = fallback_rec(arr)
-                for t, s in fb:
-                    lines.append({"text": t, "score": s, "box": None, "fb": True})
+                for t, s, bb in fb:
+                    box = [[bb[0], bb[1]], [bb[0] + bb[2], bb[1]],
+                           [bb[0] + bb[2], bb[1] + bb[3]], [bb[0], bb[1] + bb[3]]]
+                    lines.append({"text": t, "score": s, "box": box, "fb": True})
                 if fb:
                     print("[ocr_server] fallback_rec +%d candidates" % len(fb))
             self._json(200, {"lines": lines})
