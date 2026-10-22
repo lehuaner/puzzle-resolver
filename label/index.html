@@ -910,6 +910,14 @@ async function localOCR(p){
     p.conf=best.conf;
     // 重识别成功后回到「未确认」态：需要人工再核一遍才算数
     p.src="auto";
+    // 识别结果回填编辑条输入框（该块仍被选中时），聚焦方便直接回车确认
+    if(P.sel>=0&&P.pieces[P.sel]===p){
+      $("edLabel").value=p.label;
+      $("edInfo").textContent="块 #"+(P.sel+1)
+        +" · 自动 conf "+(p.conf*100|0)+"%"
+        +" · "+Math.round(p.box.w)+"×"+Math.round(p.box.h);
+      $("edLabel").focus(); $("edLabel").select();
+    }
     toast("框 #"+(P.pieces.indexOf(p)+1)+" 识别："+p.label+"（"+(best.conf*100|0)+"%）"
       +(viaSvc?" · RapidOCR":"")+(p.conf<0.65?" · 建议核对":""));
   } else {
