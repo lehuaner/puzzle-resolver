@@ -200,6 +200,7 @@
           <div id="pickCands" style="display:none;flex-wrap:wrap;gap:6px;margin:8px 0 2px"></div>
           <div class="pk-res" id="pickRes">对应全局第 <b>-</b> 块</div>
           <div class="pk-btns">
+            <button class="btn ghost sm" id="pickDel" style="display:none;color:#ff8f8f">删掉这块</button>
             <button class="btn ghost sm" id="pickCancel">取消</button>
             <button class="btn ok sm" id="pickOk">确定</button>
           </div>
@@ -280,6 +281,7 @@
 
 <!-- 摆放引导浮条：识别应用后按块引导摆放 -->
 <div class="guidebar" id="guideBar">
+  <canvas id="gdPic" width="200" height="150" style="display:none" title="这一块在照片里的位置"></canvas>
   <div class="gd-main" id="gdMain">
     <b id="gdNum">000</b>
     <span id="gdInfo">A区 第1列 第1行</span>

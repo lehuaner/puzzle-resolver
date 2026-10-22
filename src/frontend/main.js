@@ -6,11 +6,14 @@ import { loadStates } from "./grid.js";
 import { buildBoard, renderZones, updateStats, initMinimap, applyPan, placeMinimap, zoomCenter, fitToScreen } from "./board.js";
 import { doUndo, exitBatch } from "./interact.js";
 import { closeSearch } from "./search.js";
-import { cancelPick, drawScan } from "./scan.js";
-import { guideExit } from "./guide.js";
+import { cancelPick, drawScan, scanGuideInfo, scanGuideDraw } from "./scan.js";
+import { guideExit, setGuideProviders } from "./guide.js";
 import { detectNumbers } from "./ocr.js";
 import "./settings.js";   // 无导出：仅注册设置面板的交互
 import { wsUrl, connectWS, setLocalMode, bootView } from "./sync.js";
+
+// 引导浮条需要「这组是哪几块」+「这块在照片里的位置」，由 scan.js 提供
+setGuideProviders(scanGuideInfo, scanGuideDraw);
 
 window.__ocr = detectNumbers;   // 调试/E2E 钩子
 
