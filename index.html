@@ -203,6 +203,23 @@
             <button class="btn ok sm" id="pickOk">确定</button>
           </div>
         </div>
+        <!-- 可疑点逐块审查（照标注台的「确认 / 改号 / 删除 + 上一块 / 下一块」） -->
+        <div class="scan-pick" id="scanRv">
+          <h4 id="rvTitle">审查可疑点</h4>
+          <div class="pk-zoom">
+            <canvas id="rvZoom" width="176" height="176"></canvas>
+            <div class="pk-zbtns">
+              <button id="rvZoomOut">－</button><span id="rvZoomVal">×3</span><button id="rvZoomIn">＋</button>
+            </div>
+          </div>
+          <div class="pk-res" id="rvInfo">—</div>
+          <input class="pk-num" id="rvNum" inputmode="numeric" placeholder="改成正确编号" maxlength="6" style="height:40px;font-size:17px;margin-top:8px">
+          <div id="rvActs" style="display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 2px"></div>
+          <div class="pk-btns">
+            <button class="btn ghost sm" id="rvPrev">◀ 上一块</button>
+            <button class="btn ok sm" id="rvNext">下一块 ▶</button>
+          </div>
+        </div>
       </div>
       <div class="scan-side">
         <div class="row2" id="osvcBadge" style="cursor:pointer" title="PP-OCR 高精度识别服务（标注台同款，127.0.0.1:8849）。双击 label/start-ocr-server.bat 启动后点此检测；未连接时自动用内置模板。">

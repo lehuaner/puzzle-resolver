@@ -789,7 +789,7 @@ function recalcScan(){
       var sd0=readingSide(r)||0; if(!sd0) return;
       weakCells.push({x:r.x,y:r.y,side:sd0,cands:[r.idx],src:"low",conf:r.conf});
     });
-    if(scan.suspAck && scan.suspAck.size){            // 人工点过「无误」的不再标红
+    if(scan.suspAck && scan.suspAck.size && !scan._adopting){ // 人工审过「无误/已改」的不再标红
       suspIdx.forEach(function(i){ if(scan.suspAck.has(i)) suspIdx.delete(i); });
     }
     reads.forEach(function(r){
@@ -931,6 +931,10 @@ function recalcScan(){
       return;
     }
     scan.reads=reads; scan.groups=groups; scan.grpMap=grpMap;
+    // 人工审过的（✓无误 / ✎已改号 / ✕删掉）不再算可疑——审查流程靠这条收尾
+    if(scan.suspAck && scan.suspAck.size){
+      suspIdx.forEach(function(i){ if(scan.suspAck.has(i)) suspIdx.delete(i); });
+    }
     scan.suspIdx=suspIdx.size?suspIdx:null;
     scan.suspPairs=suspPairs;
     scan.inferred=inferred; scan.inferredIdx=inferredIdx; scan.inferredPos=inferredPos;
@@ -1037,6 +1041,8 @@ function resetScan(keepImg,keepOcr){
   scan.reads=null; scan.groups=null; scan.grpMap=null;
   scan.suspIdx=null; scan.suspPairs=null;
   scan.suspAck=new Set();                       // 人工点过「无误」的可疑块
+  scan.review=null;                             // 可疑点逐块审查状态
+  var rvp=$("scanRv"); if(rvp) rvp.style.display="none";
   scan.inferred=0; scan.inferredIdx=null; scan.inferredPos=null; scan.inferredWeak=0; scan.weakCells=null;
   scan.zoom=1; scan.ox=0; scan.oy=0;
   setScanMode("move");
@@ -1076,9 +1082,13 @@ $("bScan").addEventListener("click",function(){
   osvcProbe();                  // 探测 PP-OCR 服务状态
   if(!scan.img){ resetScan(false); }
   else { drawScan(); }
+  if(scan.review && scan.suspIdx && scan.suspIdx.size) startReview();  // 上次没审完：接着审
   setTimeout(drawScan,60);
 });
-$("scanClose").addEventListener("click",function(){ $("ovScan").classList.remove("on"); });
+$("scanClose").addEventListener("click",function(){
+  $("ovScan").classList.remove("on");
+  var rvp=$("scanRv"); if(rvp) rvp.style.display="none";   // 审查面板跟着收起（状态留着，回来接着审）
+});
 $("osvcBadge").addEventListener("click",function(){
   osvcProbe();
   toast(OSVC.ok?"OCR：PP-OCR 高精度（服务已连接）":"正在检测 PP-OCR 服务（127.0.0.1:8849）…");
@@ -1365,6 +1375,157 @@ function recheckWeak(){
   }
   step();
 }
+/* ---- 可疑点逐块审查（照标注台：✓确认 / 🔍重识别 / ✕删除 / ◀▶ 逐块过） ----
+   有可疑点时底部「应用」变成「下一步：审查可疑 N」，点进去强制逐块过一遍：
+   每块单独出大图 + 诊断（读到的编号 vs 该在的网格位）+ 四个动作，
+   全部审完才回到「应用识别结果」。 */
+var rvR=80;
+function suspListNow(){
+  var out=[];
+  if(scan.suspIdx) scan.suspIdx.forEach(function(i){ out.push(i); });
+  out.sort(function(a,b){ return a-b; });
+  return out;
+}
+function rvDecided(idx){ return !!(scan.suspAck && scan.suspAck.has(idx)); }
+function rvNextUndecided(from){
+  var R=scan.review; if(!R) return -1;
+  for(var j=from;j<R.list.length;j++){ if(!rvDecided(R.list[j])) return j; }
+  return -1;
+}
+function drawRvZoom(){
+  var R=scan.review; if(!R||!R.at||!scan.img) return;
+  var cv=$("rvZoom"), c=cv.getContext("2d");
+  var rad=Math.max(10,Math.min(320,rvR)), k=scan.img.width/scan.W;
+  c.fillStyle="#060a10"; c.fillRect(0,0,cv.width,cv.height);
+  try{ c.drawImage(scan.img,(R.at.x-rad)*k,(R.at.y-rad)*k,2*rad*k,2*rad*k,0,0,cv.width,cv.height); }catch(err){}
+  c.strokeStyle="rgba(255,110,110,.75)"; c.lineWidth=2;
+  c.strokeRect(2,2,cv.width-4,cv.height-4);
+  c.strokeStyle="rgba(255,212,94,.75)"; c.lineWidth=1.2;
+  c.beginPath();
+  c.moveTo(cv.width/2,0); c.lineTo(cv.width/2,cv.height);
+  c.moveTo(0,cv.height/2); c.lineTo(cv.width,cv.height/2);
+  c.stroke();
+  $("rvZoomVal").textContent="×"+(cv.width/(2*rad)).toFixed(1).replace(/\.0$/,"");
+}
+function rvShow(){
+  var R=scan.review; if(!R) return;
+  if(R.i>=R.list.length){ rvDone(); return; }
+  var idx=R.list[R.i], k=scan.W/scan.ocr.w;
+  var rd=(scan.ocr&&scan.ocr.map)?scan.ocr.map.get(idx):null;
+  var x,y;
+  if(rd){ x=rd.x*k; y=rd.y*k; }
+  else { var q0=scanCellXY(idxToRC(idx)); x=q0.x; y=q0.y; }
+  R.at={x:x,y:y};
+  $("rvTitle").textContent="审查 "+(R.i+1)+"/"+R.list.length+" · "+zoneLetter(zoneOf(idx))+"-"+fmt(idx);
+  var lines=[];
+  if(rd) lines.push("照片读到 <b>"+fmt(idx)+"</b> · 置信 <b>"+(rd.conf!=null?Number(rd.conf).toFixed(2):"—")+"</b>");
+  else lines.push("<b>"+fmt(idx)+"</b> · 无读数（推算补入）");
+  if(scan.blockMode){
+    var q2=scanCellXY(idxToRC(idx));
+    var mp=(Math.abs(scan.pitchX)+Math.abs(scan.pitchY))/2;
+    var d2=rd?Math.hypot(q2.x-rd.x*k,q2.y-rd.y*k):0;
+    lines.push(d2>0 ? ("离它编号该在的网格位 <b>"+(d2/mp).toFixed(1)+"</b> 格")
+                    : "位置对齐，可能是邻片读数串号");
+  } else {
+    lines.push("与相邻片的拼合关系对不上（编号差/间距矛盾）");
+  }
+  $("rvInfo").innerHTML=lines.join("<br>");
+  $("rvNum").value="";
+  var acts=$("rvActs"); acts.innerHTML="";
+  function mk(label,title,fn,col){
+    var b=document.createElement("button");
+    b.className="btn ghost sm"; b.textContent=label; b.title=title;
+    if(col) b.style.color=col;
+    b.addEventListener("click",fn);
+    acts.appendChild(b);
+  }
+  mk("✓ 无误","这块没问题，保留",function(){ rvAck(idx,true); },"#6cffb0");
+  mk("🔍 重识别","对这块单独放大再识别一次",function(){ rvReocr(idx); });
+  mk("✕ 删掉","这块不该算（误读/错位）",function(){ rvAck(idx,false); },"#ff8080");
+  mk("✓ 改为输入值","用上面填的编号替换这块",function(){ rvReplace(idx); });
+  drawRvZoom();
+}
+function rvDone(){
+  $("scanRv").style.display="none";
+  scan.review=null;
+  recalcScan(); drawScan(); updateScanStats();
+  toast("可疑点已全部审完，可以点「应用」了");
+}
+function rvAdvance(){
+  var R=scan.review; if(!R) return;
+  var j=rvNextUndecided(R.i+1);
+  if(j<0) j=rvNextUndecided(0);
+  if(j<0){ rvDone(); return; }
+  R.i=j; rvShow();
+}
+function rvAck(idx,keep){
+  if(!scan.suspAck) scan.suspAck=new Set();
+  scan.suspAck.add(idx);
+  if(!keep && scan.ocr && scan.ocr.map) scan.ocr.map.delete(idx);
+  recalcScan(); drawScan(); updateScanStats();
+  rvAdvance();
+}
+function rvReplace(idx){
+  var n=parsePickNum($("rvNum").value);
+  if(!n||n<1||n>S.cfg.total){ toast("请输入 1 ~ "+S.cfg.total+" 的编号"); return; }
+  if(n!==idx && scan.ocr.map.has(n)){ toast("第 "+n+" 块已经有读数了"); return; }
+  var R=scan.review, k=scan.W/scan.ocr.w, rd=scan.ocr.map.get(idx);
+  var at=(R&&R.at)?R.at:null;
+  var ox=at?at.x/k:(rd?rd.x:0), oy=at?at.y/k:(rd?rd.y:0);
+  scan.ocr.map.delete(idx);
+  insertReading(n,ox,oy);
+  if(!scan.suspAck) scan.suspAck=new Set();
+  scan.suspAck.add(idx);
+  scan.suspAck.add(n);            // 人工改的号是权威：新旧都收进「已审」，否则新号又标红、审查永远收敛不了
+  toast("已改为 "+n);
+  recalcScan(); drawScan(); updateScanStats(); rvAdvance();
+}
+function rvReocr(idx){
+  var R=scan.review; if(!R||!R.at) return;
+  if(!OSVC.ok){ toast("PP-OCR 未连接，无法重识别"); return; }
+  var k=scan.W/scan.ocr.w, rd=scan.ocr.map.get(idx);
+  var side=rd?readingSide(rd):0;
+  if(!side) side=Math.min(scan.ocr.w,scan.ocr.h)/18;
+  $("rvInfo").innerHTML="<b>重识别中…</b>";
+  roiOCR(R.at.x/k, R.at.y/k, side).then(function(rs){
+    if(!rs.length){ toast("没识别出编号"); rvShow(); return; }
+    rs.sort(function(a,b){ return b.score-a.score; });
+    var top=rs[0];
+    if(top.idx===idx){ toast("重识别仍是 "+idx+"（置信 "+top.score.toFixed(2)+"）"); rvShow(); return; }
+    if(scan.ocr.map.has(top.idx)){ toast("识别为 "+top.idx+"，但那个编号已有读数"); rvShow(); return; }
+    scan.ocr.map.delete(idx);
+    insertReading(top.idx, R.at.x/k, R.at.y/k);
+    if(!scan.suspAck) scan.suspAck=new Set();
+    scan.suspAck.add(idx);
+    scan.suspAck.add(top.idx);
+    toast("已改为 "+top.idx+"（置信 "+top.score.toFixed(2)+"）");
+    recalcScan(); drawScan(); updateScanStats(); rvAdvance();
+  });
+}
+function startReview(){
+  var list=suspListNow();
+  if(!list.length){ toast("没有待审查的可疑点"); return; }
+  scan.review={list:list,i:0};
+  var pr=$("scanRv"), st=$("scanStage").getBoundingClientRect();
+  pr.style.left=Math.max(8, st.width-292)+"px";
+  pr.style.top="10px";
+  pr.style.display="block";
+  rvShow();
+}
+$("rvPrev").addEventListener("click",function(){
+  var R=scan.review; if(!R) return;
+  if(R.i<=0){ toast("已经是第一块"); return; }
+  R.i--; rvShow();
+});
+$("rvNext").addEventListener("click",function(){
+  var R=scan.review; if(!R) return;
+  var j=rvNextUndecided(R.i+1);
+  if(j<0){ rvDone(); return; }
+  R.i=j; rvShow();
+});
+$("rvZoomIn").addEventListener("click",function(){ rvR=Math.max(14,rvR/1.5); drawRvZoom(); });
+$("rvZoomOut").addEventListener("click",function(){ rvR=Math.min(320,rvR*1.5); drawRvZoom(); });
+
 function updateScanStats(){
   var set=scan.result||new Set(), newly=0;
   set.forEach(function(i){ if(S.states[i]!==1) newly++; });
@@ -1412,6 +1573,10 @@ function updateScanStats(){
   $("bApplyGuide").disabled = set.size===0;
   // 「应用」始终在：「应用并引导摆放」是逐块走一遍的可选流程，不该把直接应用顶掉
   $("bApplyScan").style.display="block";
+  // 有可疑点 → 「应用」变成「下一步」：先逐块审查，审完才允许应用
+  var bA=$("bApplyScan");
+  if(nS) bA.textContent="下一步：审查可疑 "+nS;
+  else bA.textContent="应用识别结果";
 }
 /* 可疑块审核：点编号跳过去 / ✓ 无误 / ✕ 删掉（一次把 5 个过完，不用在照片上找） */
 $("scanGrpDetail").addEventListener("click",function(e){
@@ -1727,6 +1892,8 @@ function applyScanCore(){
 }
 
 $("bApplyScan").addEventListener("click",function(){
+  // 还有可疑点：先走逐块审查，审完再应用（避免带着 12 个红框直接铺到主界面）
+  if(scan.suspIdx && scan.suspIdx.size){ startReview(); return; }
   applyScanCore();
 });
 
@@ -1740,4 +1907,5 @@ $("bApplyGuide").addEventListener("click",function(){
 /* Esc 关闭放大选点面板（main.js 键盘处理用） */
 export function cancelPick(){
   scan.picking=null; $("scanPick").classList.remove("on");
+  if(scan.review){ scan.review=null; $("scanRv").style.display="none"; }
 }
