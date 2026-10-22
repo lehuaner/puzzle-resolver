@@ -1,6 +1,6 @@
 import { S } from "./store.js";
 import { $, toast, vibrate } from "./dom.js";
-import { fmt, idxToRC, zoneOf, zoneLetter, zoneCount } from "./coords.js";
+import { fmt, idxToRC, rcToIdx, zoneOf, zoneLetter, zoneCount } from "./coords.js";
 import { neighborKind, promoteConnected } from "./grid.js";
 import { centerOnIdx, setView, placeMinimap, paint, afterChange } from "./board.js";
 import { pushUndo } from "./interact.js";
@@ -103,6 +103,34 @@ export function flashFound(i){
     el.classList.remove("found");
     placeMinimap();
   },9000);
+  placeMinimap();
+}
+
+// 区域高亮：给一组块画外沿边框（与相邻高亮块共用的边不画），不规则形状也连成一条完整轮廓
+var regionTimer=null;
+export function flashRegion(list,ms){
+  var set=new Set(list), els=[];
+  set.forEach(function(i){
+    var el=S.cells[i]; if(!el) return;
+    var p=idxToRC(i);
+    function nb(dr,dc){
+      var r=p.row+dr, c=p.col+dc;
+      if(r<1||c<1||r>S.rows||c>S.cfg.cols) return -1;
+      return rcToIdx(r,c);
+    }
+    el.classList.add("hl");
+    if(!set.has(nb(-1,0))) el.classList.add("hb-t");
+    if(!set.has(nb(0,1)))  el.classList.add("hb-r");
+    if(!set.has(nb(1,0)))  el.classList.add("hb-b");
+    if(!set.has(nb(0,-1))) el.classList.add("hb-l");
+    els.push(el);
+  });
+  if(!els.length) return;
+  clearTimeout(regionTimer);
+  regionTimer=setTimeout(function(){
+    for(var k=0;k<els.length;k++) els[k].classList.remove("hl","hb-t","hb-r","hb-b","hb-l");
+    placeMinimap();
+  }, ms||9000);
   placeMinimap();
 }
 

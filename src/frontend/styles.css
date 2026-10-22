@@ -92,6 +92,17 @@ header{display:flex;align-items:center;gap:12px;padding:8px 14px;
              inset 0 0 16px rgba(255,212,94,.75);
   animation:foundPulse .58s ease-in-out infinite alternate}
 @keyframes foundPulse{from{opacity:.3;transform:scale(.82)}to{opacity:1;transform:scale(1.12)}}
+/* 识别结果区域高亮：只画外沿边框（相邻高亮块共边不画），不规则形状连成一条完整轮廓 */
+.cell.hl{opacity:1!important;overflow:visible;z-index:5}
+.cell.hl::after{content:"";position:absolute;inset:0;border-radius:2px;
+  border:0 solid var(--found);pointer-events:none;z-index:6;
+  filter:drop-shadow(0 0 5px rgba(255,212,94,.75));
+  animation:hlPulse 1.1s ease-in-out infinite alternate}
+.cell.hl.hb-t::after{border-top-width:3px}
+.cell.hl.hb-r::after{border-right-width:3px}
+.cell.hl.hb-b::after{border-bottom-width:3px}
+.cell.hl.hb-l::after{border-left-width:3px}
+@keyframes hlPulse{from{opacity:.5}to{opacity:1}}
 .cell{z-index:1}
 
 /* 大区分隔线 */

@@ -114,6 +114,26 @@ export function centerOnZone(z,anim){
   applyPan(anim!==false);
 }
 
+// 任意块集合：包络盒居中到视口；当前缩放装不下时只往外缩到刚好装下（不放大）
+export function centerOnSet(list,anim){
+  if(!list||!list.length) return;
+  var minC=1e9,maxC=0,minR=1e9,maxR=0;
+  for(var k=0;k<list.length;k++){
+    var p=idxToRC(list[k]);
+    if(p.col<minC)minC=p.col; if(p.col>maxC)maxC=p.col;
+    if(p.row<minR)minR=p.row; if(p.row>maxR)maxR=p.row;
+  }
+  var w=(maxC-minC)*S.step+S.cellSize, h=(maxR-minR)*S.step+S.cellSize;
+  var W=S.wrap.clientWidth-48, H=S.wrap.clientHeight-48;
+  if(W<60) W=S.wrap.clientWidth||60;
+  if(H<60) H=S.wrap.clientHeight||60;
+  S.scale=Math.min(S.scale, W/w, H/h);
+  var cx=((minC-1)*S.step+w/2)*S.scale;
+  var cy=((minR-1)*S.step+h/2)*S.scale;
+  S.tx=S.wrap.clientWidth/2-cx; S.ty=S.wrap.clientHeight/2-cy;
+  applyPan(anim!==false);
+}
+
 // 回到初始：1:1 尺寸，装得下就居中，装不下就从左上角开始
 export function resetView(anim){
   S.scale=1;

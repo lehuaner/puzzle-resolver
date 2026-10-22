@@ -2,10 +2,10 @@ import { S } from "./store.js";
 import { $, toast, vibrate } from "./dom.js";
 import { fmt, idxToRC, rcToIdx, zoneOf, zoneLetter } from "./coords.js";
 import { mainComp, promoteConnected } from "./grid.js";
-import { paint, afterChange } from "./board.js";
+import { paint, afterChange, centerOnSet, setView } from "./board.js";
 import { pushUndo } from "./interact.js";
 import { markChange } from "./sync.js";
-import { hideLocCard } from "./search.js";
+import { hideLocCard, flashRegion } from "./search.js";
 
 /* ================= 照片识别 ================= */
 var scan={
@@ -624,6 +624,18 @@ $("bApplyScan").addEventListener("click",function(){
   pushUndo(Array.from(orig.entries()));
   afterChange();
   $("ovScan").classList.remove("on");
+  // 像找点一样把结果带到眼前：包络盒居中（装不下就缩到刚好装下）+ 区域外沿高亮
+  var targets=Array.from(orig.keys());
+  if(!targets.length) targets=Array.from(scan.result);
+  var needSwitch=(S.viewZone!=="all" &&
+    targets.some(function(i){ return String(zoneOf(i))!==S.viewZone; }));
+  if(needSwitch){
+    setView("all");   // 目标在其它大区：回全局视图再定位（同找点）
+    setTimeout(function(){ centerOnSet(targets,true); flashRegion(targets); },60);
+  } else {
+    centerOnSet(targets,true);
+    flashRegion(targets);
+  }
   var msg="已应用 · "+applied+" 块";
   if(demoted) msg+="，其中 "+demoted+" 块待定";
   toast(msg);
