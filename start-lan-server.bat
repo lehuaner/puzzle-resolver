@@ -2,6 +2,13 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 
+rem ---- if port 8848 is already in use, stop that process first ----
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8848" ^| findstr "LISTENING"') do (
+  echo Port 8848 busy ^(PID %%a^) - stopping old process...
+  taskkill /F /PID %%a >nul 2>&1
+)
+ping -n 2 127.0.0.1 >nul
+
 echo ============================================
 echo   Puzzle Map - LAN Server (port 8848)
 echo ============================================
