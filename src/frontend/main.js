@@ -7,6 +7,7 @@ import { buildBoard, renderZones, updateStats, initMinimap, applyPan, placeMinim
 import { doUndo, exitBatch } from "./interact.js";
 import { closeSearch } from "./search.js";
 import { cancelPick, drawScan } from "./scan.js";
+import { guideExit } from "./guide.js";
 import { detectNumbers } from "./ocr.js";
 import "./settings.js";   // 无导出：仅注册设置面板的交互
 import { wsUrl, connectWS, setLocalMode, bootView } from "./sync.js";
@@ -23,6 +24,7 @@ document.addEventListener("keydown",function(e){
     else if($("ovSearch").classList.contains("on")) closeSearch();
     else if($("ovSet").classList.contains("on")) $("ovSet").classList.remove("on");
     else if($("ovScan").classList.contains("on")) $("ovScan").classList.remove("on");
+    else if(S.guideActive) guideExit();
     else exitBatch();
   }
   // 方向键平移 / +/- 缩放 / 0 适应

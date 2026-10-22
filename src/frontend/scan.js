@@ -3,9 +3,11 @@ import { $, toast, vibrate } from "./dom.js";
 import { fmt, idxToRC, rcToIdx, zoneOf, zoneLetter } from "./coords.js";
 import { mainComp, promoteConnected } from "./grid.js";
 import { paint, afterChange, centerOnSet, setView } from "./board.js";
-import { pushUndo } from "./interact.js";
+import { pushUndo, exitBatch } from "./interact.js";
 import { markChange } from "./sync.js";
 import { hideLocCard, flashRegion } from "./search.js";
+import { detectNumbers } from "./ocr.js";
+import { startGuide } from "./guide.js";
 
 /* ================= 照片识别 ================= */
 var scan={
@@ -17,7 +19,8 @@ var scan={
   rot:false,           // 拼放方向相对编号框架旋转了 90°：照片 x 由行驱动、y 由列驱动
   picking:null,
   zoom:1, ox:0, oy:0, fit:1,   // 照片视图：缩放倍数（1=适应窗口）与平移偏移
-  mode:"move"          // move 移动照片 / grid 微调网格 / edit 增删结果
+  mode:"move",         // move 移动照片 / grid 微调网格 / edit 增删结果
+  ocr:null             // {results, map:Map(idx->rec), w, h} 散块编号识别（OCR 工作分辨率）
 };
 var scanCanvas=$("scanCanvas"), scanCtx=null;
 
@@ -203,6 +206,8 @@ function drawScanGrid(){
   var px=Math.abs(scan.pitchX), py=Math.abs(scan.pitchY);
   var W=scan.W,H=scan.H;
   var bw=px*0.66, bh=py*0.66;
+  var ocrMode=scan.ocr && scan.ocr.map.size>=2;
+  // 散块模式下网格框更淡（编号标注才是主角）
   for(var i=1;i<=S.cfg.total;i++){
     var p=idxToRC(i);
     var q=scanCellXY(p);
@@ -212,38 +217,73 @@ function drawScanGrid(){
     var pend=ok && scan.pendingSet && scan.pendingSet.has(i);
     scanCtx.fillStyle = ok
       ? (pend ? "rgba(240,180,30,.34)" : "rgba(40,230,120,.30)")
-      : "rgba(130,150,175,.16)";
+      : (ocrMode ? "rgba(130,150,175,.07)" : "rgba(130,150,175,.16)");
     scanCtx.fillRect(x-bw/2,y-bh/2,bw,bh);
     if(ok){
       scanCtx.strokeStyle = pend ? "rgba(255,198,40,.95)" : "rgba(60,255,140,.95)";
       scanCtx.lineWidth=Math.max(1.2,px*0.055);
       scanCtx.strokeRect(x-bw/2,y-bh/2,bw,bh);
     } else {
-      scanCtx.strokeStyle="rgba(150,170,195,.32)"; scanCtx.lineWidth=1;
+      scanCtx.strokeStyle= ocrMode ? "rgba(150,170,195,.14)" : "rgba(150,170,195,.32)";
+      scanCtx.lineWidth=1;
       scanCtx.strokeRect(x-bw/2,y-bh/2,bw,bh);
     }
+  }
+  // 散块模式：把读到的编号标在照片上（conf 着色）
+  if(ocrMode && scan.ocr.results){
+    var k=scan.W/scan.ocr.w;
+    scan.ocr.results.forEach(function(r){
+      var x=r.x*k, y=r.y*k;
+      if(x<-40||y<-40||x>W+40||y>H+40) return;
+      var good=r.conf>=0.65, mid=r.conf>=0.5;
+      var col=good?"rgba(60,255,140,.95)":(mid?"rgba(255,198,40,.95)":"rgba(160,175,195,.6)");
+      // 编号文字底衬
+      var label=r.letter+"-"+r.digits;
+      scanCtx.font="bold 15px monospace";
+      var tw=scanCtx.measureText(label).width;
+      scanCtx.fillStyle="rgba(8,12,18,.72)";
+      scanCtx.fillRect(x-tw/2-4, y-31, tw+8, 18);
+      scanCtx.fillStyle=col;
+      scanCtx.textAlign="center"; scanCtx.textBaseline="middle";
+      scanCtx.fillText(label, x, y-22);
+      // 片位置小十字
+      scanCtx.strokeStyle=col; scanCtx.lineWidth=1.4;
+      scanCtx.beginPath();
+      scanCtx.moveTo(x-6,y); scanCtx.lineTo(x+6,y);
+      scanCtx.moveTo(x,y-6); scanCtx.lineTo(x,y+6);
+      scanCtx.stroke();
+    });
   }
 }
 
 function recalcScan(){
   if(!scan.calibrated) return;
-  var rx=Math.abs(scan.pitchX)*0.26, ry=Math.abs(scan.pitchY)*0.26;
   var set=new Set(), checked=0, newly=0;
-  for(var i=1;i<=S.cfg.total;i++){
-    var p=idxToRC(i);
-    var q=scanCellXY(p);
-    var x=q.x, y=q.y;
-    if(x<rx||y<ry||x>scan.W-rx||y>scan.H-ry) continue;
-    checked++;
-    if(samplePiece(x,y,rx,ry)>0.55){
-      set.add(i);
-      if(S.states[i]!==1) newly++;
+  if(scan.ocr && scan.ocr.map.size>=2){
+    // 散块模式：OCR 读到的编号本身就是「该块已拼」的证据
+    scan.ocr.map.forEach(function(r){
+      checked++;
+      if(r.conf>=0.5 && r.idx>=1 && r.idx<=S.cfg.total) set.add(r.idx);
+    });
+  } else {
+    var rx=Math.abs(scan.pitchX)*0.26, ry=Math.abs(scan.pitchY)*0.26;
+    for(var i=1;i<=S.cfg.total;i++){
+      var p=idxToRC(i);
+      var q=scanCellXY(p);
+      var x=q.x, y=q.y;
+      if(x<rx||y<ry||x>scan.W-rx||y>scan.H-ry) continue;
+      checked++;
+      if(samplePiece(x,y,rx,ry)>0.55){
+        set.add(i);
+        if(S.states[i]!==1) newly++;
+      }
     }
   }
   scan.result=set; scan.cellsChecked=checked;
   $("scanCells").textContent=checked;
   updateScanStats();
   if(scan.calibrated) $("scanTip").textContent="识别 "+set.size+" 块"
+    +(scan.ocr&&scan.ocr.map.size>=2?" · 编号读取模式":"")
     +" · "+(scan.mode==="edit"?"可增删结果":"可微调网格 / 增删结果");
 }
 
@@ -304,6 +344,7 @@ function resetScan(keepImg){
   scan.anchors=[]; scan.result=null; scan.cellsChecked=0; scan.picking=null;
   scan.calibrated=false;
   scan.rot=false;
+  scan.ocr=null; scan.ocrAuto=false;
   scan.zoom=1; scan.ox=0; scan.oy=0;
   setScanMode("move");
   $("scanPick").classList.remove("on");
@@ -311,6 +352,9 @@ function resetScan(keepImg){
   $("scanFound").textContent="0"; $("scanCells").textContent="0"; $("scanNew").textContent="0";
   $("scanPend").textContent="0";
   $("bApplyScan").disabled=true;
+  $("bApplyGuide").disabled=true;
+  $("bApplyGuide").style.display="none";
+  $("bApplyScan").style.display="block";
   $("scanTip").style.display=scan.img?"block":"none";
   $("scanTip").textContent="点第 1 块拼图的中心（并输入编号）";
   if(!keepImg){ scan.img=null; scan.mask=null; scan.base=null; scanCtx=null; $("scanTip").style.display="none"; }
@@ -346,14 +390,34 @@ $("fImg").addEventListener("change",function(e){
   var url=URL.createObjectURL(f);
   var img=new Image();
   img.onload=function(){
-    scan.img=img; scan.base=null; scan.mask=null; scan.W=0; scan.H=0;
+    scan.img=img; scan.base=null; scan.mask=null; scan.W=0; scan.H=0; scan.ocr=null;
     resetScan(true);
     $("scanTip").textContent="正在分析照片…";
     setTimeout(function(){
       analyzeImage(img,function(){
-        $("scanTip").textContent="点第 1 块拼图的中心（并输入编号）";
+        $("scanTip").textContent="正在读取片上编号…";
         drawScan();
-        toast("已识别拼图区域");
+        // 自动 OCR：编号识别 → 散块模式 + 自动标定（失败回退手点）
+        setTimeout(function(){
+          try{
+            var res=detectNumbers(img);
+            var ok=res.filter(function(r){ return r.conf>=0.5 && r.n>=4 && r.idx>=1 && r.idx<=S.cfg.total; });
+            scan.ocr={ results:res, map:new Map(), w:Math.round(img.width*Math.min(1,3072/Math.max(img.width,img.height))),
+                       h:Math.round(img.height*Math.min(1,3072/Math.max(img.width,img.height))) };
+            ok.forEach(function(r){ if(!scan.ocr.map.has(r.idx)) scan.ocr.map.set(r.idx,r); });
+            if(ok.length>=2 && autoCalibrate(ok)) {
+              toast("已自动识别 "+ok.length+" 个编号");
+            } else {
+              scan.ocrAuto=false;
+              $("scanTip").textContent=ok.length
+                ? "读到 "+ok.length+" 个编号但不足以自动标定，请手动点两块拼图中心"
+                : "未读到编号，请点两块拼图的中心（并输入编号）";
+            }
+            drawScan();
+          }catch(err){
+            $("scanTip").textContent="自动识别失败，请点两块拼图的中心（并输入编号）";
+          }
+        },40);
       });
     },40);
     URL.revokeObjectURL(url);
@@ -362,6 +426,35 @@ $("fImg").addEventListener("change",function(e){
   img.src=url;
   e.target.value="";
 });
+
+/* 从 OCR 结果挑两个锚点自动标定：conf 降序取前 8，尝试距离最远且能解出的对 */
+function autoCalibrate(okList){
+  var cands=okList.slice().sort(function(a,b){ return b.conf-a.conf; }).slice(0,8);
+  var k=scan.W/scan.ocr.w;              // OCR 工作坐标 → scan 工作坐标
+  var best=null;
+  for(var i=0;i<cands.length;i++){
+    for(var j=i+1;j<cands.length;j++){
+      var a=cands[i], b=cands[j];
+      if(a.idx===b.idx) continue;
+      var d=Math.hypot(a.x-b.x,a.y-b.y);
+      if(!best||d>best.d) best={ a:a, b:b, d:d };
+    }
+  }
+  if(!best) return false;
+  scan.anchors=[
+    { x:best.a.x*k, y:best.a.y*k, idx:best.a.idx },
+    { x:best.b.x*k, y:best.b.y*k, idx:best.b.idx }
+  ];
+  scan.ocrAuto=true;
+  computeScan();
+  if(!scan.calibrated){ scan.anchors=[]; scan.ocrAuto=false; return false; }
+  scanCalTip();
+  $("scanStep").innerHTML="已自动识别并标定（读取到 <b>"+okList.length+"</b> 个编号）<br>"
+    +"<b>绿框</b>＝识别为已拼 · <b>编号标注</b>＝片上读到的编号<br>"
+    +"顶部工具条：<b>移动照片</b>查看细节 · <b>微调网格</b>整体挪动 · <b>增删结果</b>逐格修正<br>"
+    +"<span class=\"sn\">识别有误的编号可以直接在照片上核对；应用后可点「应用并引导摆放」逐块引导。</span>";
+  return true;
+}
 
 function parsePickNum(v){
   var raw=String(v||"").replace(/[^0-9]/g,"");
@@ -411,6 +504,12 @@ function updateScanStats(){
   $("scanNew").textContent=newly;
   $("scanPend").textContent=scan.pendingSet.size;
   $("bApplyScan").disabled = set.size===0;
+  // 引导按钮：散块模式（编号读取）下才出现
+  var guideMode = set.size>0 && scan.ocr && scan.ocr.map.size>=2;
+  $("bApplyGuide").style.display = guideMode ? "block" : "none";
+  $("bApplyGuide").disabled = set.size===0;
+  if(guideMode) $("bApplyScan").style.display="none";
+  else $("bApplyScan").style.display="block";
 }
 
 // 放大镜：把选中点附近的原始像素放大显示，方便读印在块上的数字
@@ -601,8 +700,9 @@ $("pickOk").addEventListener("click",function(){
 });
 $("bRescan").addEventListener("click",function(){ resetScan(true); });
 
-$("bApplyScan").addEventListener("click",function(){
-  if(!scan.result||!scan.result.size){ toast("还没有识别结果"); return; }
+/* 应用识别结果的核心（bApplyScan / bApplyGuide 共用）。返回 {targets, applied, demoted} */
+function applyScanCore(){
+  if(!scan.result||!scan.result.size){ toast("还没有识别结果"); return null; }
   var orig=new Map();
   var base=new Set();                 // 应用前已完成的块 = 主片区基准
   for(var k=1;k<=S.cfg.total;k++){ if(S.states[k]===1) base.add(k); }
@@ -624,7 +724,6 @@ $("bApplyScan").addEventListener("click",function(){
   pushUndo(Array.from(orig.entries()));
   afterChange();
   $("ovScan").classList.remove("on");
-  // 像找点一样把结果带到眼前：包络盒居中（装不下就缩到刚好装下）+ 区域外沿高亮
   var targets=Array.from(orig.keys());
   if(!targets.length) targets=Array.from(scan.result);
   var needSwitch=(S.viewZone!=="all" &&
@@ -640,6 +739,19 @@ $("bApplyScan").addEventListener("click",function(){
   if(demoted) msg+="，其中 "+demoted+" 块待定";
   toast(msg);
   vibrate(30);
+  return { targets:targets, applied:applied, demoted:demoted };
+}
+
+$("bApplyScan").addEventListener("click",function(){
+  applyScanCore();
+});
+
+$("bApplyGuide").addEventListener("click",function(){
+  var r=applyScanCore();
+  if(r && r.targets.length){
+    if(S.batchMode) exitBatch();     // 引导与批量互斥
+    startGuide(r.targets);
+  }
 });
 /* Esc 关闭放大选点面板（main.js 键盘处理用） */
 export function cancelPick(){

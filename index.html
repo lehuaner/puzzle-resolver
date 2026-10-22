@@ -212,10 +212,9 @@
         <div class="scan-help" id="scanHelp">
           <div class="scan-step" id="scanStep">
             1. 选择一张<b>拼图正面朝上</b>或背面的照片<br>
-            2. 点照片里<b>任意两块拼图中心</b>并输入编号（点中会放大显示，方便看清数字）<br>
-            3. 系统自动识别所有已拼的块<br>
-            4. 有偏差就用顶部工具条：<b>移动照片</b>缩放看细节 · <b>微调网格</b>整体挪 · <b>增删结果</b>逐格改<br>
-            <span class="sn">两块要在不同行不同列、相距越远越准；拼放方向与编号差 90° 也能自动适配，网格不对点「⟳ 转向」；只把识别到的块标为已拼，不会动其它块。</span>
+            2. 系统会<b>自动读取片上编号</b>并完成标定（散块照片也能认）；失败时手动点两块拼图中心并输入编号<br>
+            3. 有偏差就用顶部工具条：<b>移动照片</b>缩放看细节 · <b>微调网格</b>整体挪 · <b>增删结果</b>逐格改<br>
+            <span class="sn">两块要在不同行不同列、相距越远越准；拼放方向与编号差 90° 也能自动适配，网格不对点「⟳ 转向」；只把识别到的块标为已拼，不会动其它块。「应用并引导」会在应用后按块逐个引导摆放。</span>
           </div>
         </div>
         <div class="scan-nudge" id="scanNudge">
@@ -229,6 +228,7 @@
         </div>
         <div style="flex:1"></div>
         <button class="btn ok" id="bApplyScan" disabled>应用识别结果</button>
+        <button class="btn primary" id="bApplyGuide" disabled style="display:none">应用并引导摆放</button>
         <button class="btn ghost sm" id="bRescan">重新标定</button>
       </div>
     </div>
@@ -248,6 +248,20 @@
     <button data-t="2">进行中</button>
     <button data-t="0">未拼</button>
     <button class="lc-x" id="lcClose" aria-label="关闭">✕</button>
+  </div>
+</div>
+
+<!-- 摆放引导浮条：识别应用后按块引导摆放 -->
+<div class="guidebar" id="guideBar">
+  <div class="gd-main" id="gdMain">
+    <b id="gdNum">000</b>
+    <span id="gdInfo">A区 第1列 第1行</span>
+    <span class="gd-step" id="gdStep">1/10</span>
+  </div>
+  <div class="gd-btns">
+    <button id="gdSkip">跳过</button>
+    <button id="gdOk" class="okb">✓ 放好了</button>
+    <button class="gd-x" id="gdExit" aria-label="退出引导">✕</button>
   </div>
 </div>
 

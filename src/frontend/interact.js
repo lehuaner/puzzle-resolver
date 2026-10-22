@@ -80,6 +80,7 @@ function tapsIntoMain(i){
 }
 export function enterBatch(i){
   if(S.batchMode) return;
+  if(S.guideActive){ toast("引导模式中 · 请先退出引导"); return; }
   hideLocCard();            // 用批量模式就收起定位卡，避免两条工具打架
   S.batchMode=true; document.body.classList.add("batch");
   if(i) addSel(i,true);
