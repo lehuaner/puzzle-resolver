@@ -871,11 +871,14 @@ function scanCalTip(){
     +" · 可微调 / 增删";
 }
 
-function resetScan(keepImg){
+function resetScan(keepImg,keepOcr){
   scan.anchors=[]; scan.result=null; scan.cellsChecked=0; scan.picking=null;
   scan.calibrated=false;
   scan.rot=false;
-  scan.ocr=null; scan.ocrAuto=false; scan.blockMode=false;
+  // keepOcr：重新标定沿用已读的编号（光斑过滤的簇级 OCR 支持检查、拼好组、推算
+  // 全都依赖 OCR 证据；清掉就等于退回纯前景扫描，光斑区会被误判成片）
+  if(!keepOcr){ scan.ocr=null; scan.ocrAuto=false; }
+  scan.blockMode=false;
   scan.alignedIdx=null; scan.blockAng=0;
   scan.reads=null; scan.groups=null; scan.grpMap=null;
   scan.suspIdx=null; scan.suspPairs=null;
@@ -984,17 +987,39 @@ $("fImg").addEventListener("change",function(e){
   e.target.value="";
 });
 
-/* 从 OCR 结果挑两个锚点自动标定：conf 降序取前 8，尝试距离最远且能解出的对 */
+/* 自动标定：= 手动两点标定的自动版。
+   候选取 conf 前 12 个读数两两组合（两种朝向都试），用该对解出的网格去解释
+   **全量读数**，取「中位残差最小」的一对——等价于人眼挑两块最可信、最分开的片
+   并把整张图对齐。比"挑距离最远"稳得多（远对可能几乎同列 → 格距退化），
+   且与照片无关，可直接沿用到别的图。中位数抗少量误读离群。 */
 function autoCalibrate(okList){
-  var cands=okList.slice().sort(function(a,b){ return b.conf-a.conf; }).slice(0,8);
+  var cands=okList.slice().sort(function(a,b){ return b.conf-a.conf; }).slice(0,12);
   var k=scan.W/scan.ocr.w;              // OCR 工作坐标 → scan 工作坐标
   var best=null;
   for(var i=0;i<cands.length;i++){
     for(var j=i+1;j<cands.length;j++){
       var a=cands[i], b=cands[j];
       if(a.idx===b.idx) continue;
-      var d=Math.hypot(a.x-b.x,a.y-b.y);
-      if(!best||d>best.d) best={ a:a, b:b, d:d };
+      var pa=idxToRC(a.idx), pb=idxToRC(b.idx);
+      var dc=pb.col-pa.col, dr=pb.row-pa.row;
+      if(dc===0||dr===0) continue;               // 必须不同行且不同列，否则解不出两轴
+      for(var r2=0;r2<2;r2++){
+        var rot=!!r2;
+        var pitchX=rot?(b.x-a.x)/dr:(b.x-a.x)/dc;
+        var pitchY=rot?(b.y-a.y)/dc:(b.y-a.y)/dr;
+        if(Math.abs(pitchX)<6||Math.abs(pitchY)<6) continue;
+        var ax=a.x*k, ay=a.y*k, px=pitchX*k, py=pitchY*k;
+        var res=[];
+        for(var m=0;m<okList.length;m++){
+          var rd=okList[m], p=idxToRC(rd.idx);
+          var cx=rot?ax+(p.row-pa.row)*px:ax+(p.col-pa.col)*px;
+          var cy=rot?ay+(p.col-pa.col)*py:ay+(p.row-pa.row)*py;
+          res.push(Math.hypot(cx-rd.x*k, cy-rd.y*k));
+        }
+        res.sort(function(x,y){ return x-y; });
+        var med=res.length?res[res.length>>1]:1e9;
+        if(!best||med<best.med) best={ a:a, b:b, rot:rot, med:med };
+      }
     }
   }
   if(!best) return false;
@@ -1003,13 +1028,14 @@ function autoCalibrate(okList){
     { x:best.b.x*k, y:best.b.y*k, idx:best.b.idx }
   ];
   scan.ocrAuto=true;
-  computeScan();
+  scan.calibrated=false; scan.result=null;
+  solveScan(best.rot);                          // 朝向按全局一致性选出，不再靠方形度猜
   if(!scan.calibrated){ scan.anchors=[]; scan.ocrAuto=false; return false; }
   scanCalTip();
   $("scanStep").innerHTML="已自动识别并标定（读取到 <b>"+okList.length+"</b> 个编号）<br>"
     +"<b>绿框</b>＝识别为已拼（随文字方向摆放） · 同色框＝<b>拼好组</b> · <b>蓝框</b>＝组内推算 · <b>红框</b>＝疑似拼错/误读<br>"
     +"顶部工具条：<b>移动照片</b>查看细节 · <b>微调网格</b>整体挪动 · <b>增删结果</b>逐格修正<br>"
-    +"<span class=\"sn\">相邻且编号方向一致的块自动归为拼好组；组内编号在网格上对不上时会标红提示。识别有误的编号可以直接在照片上核对；应用后可点「应用并引导摆放」逐块引导。</span>";
+    +"<span class=\"sn\">「重新标定」= 自动重标（Shift/Alt + 点 = 手动点两块）；网格在全部编号读数里自动找最自洽的一对片对齐，换照片同样适用。相邻且编号方向一致的块自动归为拼好组；组内编号在网格上对不上时会标红提示。识别有误的编号可以直接在照片上核对；应用后可点「应用并引导摆放」逐块引导。</span>";
   return true;
 }
 
@@ -1291,7 +1317,21 @@ $("pickOk").addEventListener("click",function(){
     }
   }
 });
-$("bRescan").addEventListener("click",function(){ resetScan(true); });
+$("bRescan").addEventListener("click",function(e){
+  resetScan(true,true);                 // 保留 OCR：编号证据（光斑过滤/拼好组/推算）不丢
+  if(e.shiftKey||e.altKey){             // 手动兜底：Shift/Alt + 点 = 自己点两块
+    $("scanStep").innerHTML="手动标定：请点两块拼图的中心（并输入编号）";
+    return;
+  }
+  var okList=[];
+  if(scan.ocr) scan.ocr.map.forEach(function(r){ okList.push(r); });
+  if(okList.length>=2 && autoCalibrate(okList)){
+    toast("已自动重新标定（"+okList.length+" 个编号）");
+    drawScan();
+  } else {
+    $("scanStep").innerHTML="自动标定失败，请手动点两块拼图的中心（并输入编号）";
+  }
+});
 
 /* 应用识别结果的核心（bApplyScan / bApplyGuide 共用）。返回 {targets, applied, demoted} */
 function applyScanCore(){
