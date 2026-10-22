@@ -40,6 +40,12 @@
   - **整块模式点没算进来的格子** → `openPick({cell:idx})`「该是 N，确认补上？」→ `addManualReading`。这才是「即使选了增删也点不动」的那条路。
 - **可疑点查重（v28b，1b03ae7）**：recalcScan 末尾（drop 清理后、`scan.result=set` 前）遍历 `suspIdx`，编号已在 `set` 里 → 自动确认、移出人工审查队列，记 `scan.suspAuto`（明细列「已自动确认 N 个可疑（结果里已有该块）」）。**只删可疑标记，绝不动 set/map/inferredPos**（用户明确要求别把正常点删掉）。不用 `suspAck`（永久黑名单），每次重算重查 → 块不在结果里时可疑会重新出现。连带两坑：① 查重吃光可疑后走不到 `rvDone()`，"审完可疑自动延伸"落空 → 自动识别链也带 `{extend:true}`，`doExt` 不再要求 `extLv==0` ② `extendInfer` 的"没多推就退回"必须在 `was===0`（首次试探）时才退，已在延伸档时退回会把上次延伸出来的块全撤掉＝掉块。认知：blockMode 两类可疑的编号必然在 result（conf≥0.5 就进 set）→ 查重后基本清零；仍留人工审的只剩散块组推算里 `occ` 占位那条。
 
+- **同一处两个编号 → 按网格位修正 + 引导合成一条（v29，7b8ecf5）**：
+  - blockMode 下 `inferredPos` 推算位 0.45 片宽内压着**异号**读数 = 同一块被标了两个号（85889 实测 10 处，全是 OCR 一位之差：628/626、683/663、878/678、983/683、109/703…）→ **按网格位改号**（保留读数原位置与角度，只换号，不掉块），记 `scan.gridFixLog`，明细列「同一处两个编号 → 已按网格位修正 N 处」。散块模式不跑（网格不可信）。
+  - **顺序坑（链）**：983→683→663 —— 一个号既是 A 处错号又是 B 处新号。收集要允许"目标号当前有读数但该读数自己也在 from 集合"（否则 983→683 被过滤）；执行必须**快照 → 统一删 → 统一插**，且 `toSet` 里的旧号**不进黑名单**（边删边插会把 683 拉黑删掉 → 那一格整块丢失）。改完 `recalcScan()` 重来一遍，`scan._adopting` 防递归。
+  - 副作用（正确但易误会）：85889 结果 321→313，掉的是"同一块算两次"的重复编号。
+  - **引导**：整块模式直接按**网格连通分量**成条（不看 OCR 组、不受 MAXC=9 限制），没组的块顺 4 邻并进相邻组（多轮扩散）；非整块模式大块里的无组块聚成次级连片、**不再碎成单块**。原因：OCR 并查集只并"读到的编号"，`pushInfer` 推出来的块没有 grp → 85889 曾排成「组1 + 49 条单块」。`scanGuideInfo` 新增返回 `block`。85889 50 条→1 条；85891 34→32 条。
+
 ## 布局 / 窄屏
 - **v22**：≤900 `.scan-stage{flex:0 0 auto;height:clamp(160px,44vh,460px)}` + `.scan-side{flex:1 1 auto;min-height:0;overflow-y:auto}`。①**数据栏底 padding 归零**——`position:sticky;bottom:0` 对齐内容盒底，留 10px 就从缝里露字 ②贴底栏必须 `flex:0 0 100%;width:100%`+`background:var(--panel)`，否则 `align-items:flex-start` 下只占半行。≤520：三动作键 12.5px 压单行、`.scan-bar` 改 `nowrap+overflow-x:auto`、`.scan-tip` 改 `left/right:8px+transform:none`。
 - **引导浮条**：≤600 改 `grid`，`areas:"pic main" "btns btns"`，按钮独占底行（`#gdSkip` 68px / `.okb` flex:1 / `.gd-x` 44px），`#gdInfo` 一律 `order:3;flex:1 1 100%`（浮条最宽 560，塞一行必被挤成「…」）。
