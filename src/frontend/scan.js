@@ -145,7 +145,17 @@ function analyzeImage(img, cb){
   }
   var thr=otsu(gray);
   var mask=new Uint8Array(w*h);
-  for(var j=0;j<mask.length;j++) mask[j]=gray[j]>thr?1:0;
+  var maskWhite=new Uint8Array(w*h);
+  for(var j=0,p=0;j<mask.length;j++,p+=4){
+    mask[j]=gray[j]>thr?1:0;
+    // 白色度：拼图背面是低饱和白纸；木地板反光光斑中圈饱和度明显偏高
+    // （彩色木纹透出），用 max-min/max < 0.10 把它从前景里剥掉——过曝核心
+    // 虽无法区分，但被中圈隔断后前景不再连通，逐格蔓延到不了那里。
+    var R=d[p],G=d[p+1],B=d[p+2];
+    var mx=R>G?R:G; if(B>mx)mx=B;
+    var mn=R>G?(G>B?B:G):(R>B?B:R);
+    maskWhite[j]=(gray[j]>thr && mx>0 && (mx-mn)/mx<0.10)?1:0;
+  }
 
   // 连通域：保留较大区域
   var label=new Int32Array(w*h), stack=new Int32Array(w*h), comps=[];
@@ -175,11 +185,18 @@ function analyzeImage(img, cb){
   for(var m=0;m<mask.length;m++){
     if(mask[m] && !keep[label[m]]) mask[m]=0;
   }
-  scan.W=w; scan.H=h; scan.gray=gray; scan.mask=mask; scan.thr=thr;
+  scan.W=w; scan.H=h; scan.gray=gray; scan.mask=mask; scan.maskWhite=maskWhite; scan.thr=thr;
   cb();
 }
 
-function samplePiece(x,y,rx,ry){
+/* 拼图块前景判定（带反光光斑过滤）。
+   木地板反光光斑在灰度 Otsu 下会误判为前景：过曝核心接近纯白、中圈发灰白，
+   饱和度/亮度/色差/缝结构都与拼图白纸重叠，逐像素无法区分。实测（85889）：
+   白纸格大窗（>缝距）maskWhite 命中率稳定在 0.91~0.99（缝贡献少量暗像素），
+   光斑核心 ≈1.0（完全无缝纯亮）、光斑中圈/骑缝格 ≤0.85（渐变暗像素多）。
+   strict=true 用于整块图蔓延/前景采样；散块组内推算用 whiteHit 的
+   片心+接缝双窗判据（更严，防散堆邻片/凸头骗过）。 */
+function isPieceAt(x,y,rx,ry,strict){
   var hit=0,tot=0;
   for(var dy=-ry;dy<=ry;dy++){
     var py=Math.round(y+dy);
@@ -189,10 +206,30 @@ function samplePiece(x,y,rx,ry){
       if(px<0||px>=scan.W) continue;
       if((dx*dx)/(rx*rx)+(dy*dy)/(ry*ry)>1) continue;
       tot++;
-      if(scan.mask[py*scan.W+px]) hit++;
+      if(scan.maskWhite[py*scan.W+px]) hit++;
     }
   }
-  return tot>0 ? hit/tot : 0;
+  if(!tot||hit/tot<=0.55) return false;
+  if(!strict) return true;
+  var RX=Math.round(Math.abs(scan.pitchX)*0.55), RY=Math.round(Math.abs(scan.pitchY)*0.55);
+  if(RX<10||RY<10) return true;
+  var hitB=0, totB=0;
+  for(var dy2=-RY;dy2<=RY;dy2++){
+    var py2=Math.round(y+dy2);
+    if(py2<0||py2>=scan.H) continue;
+    for(var dx2=-RX;dx2<=RX;dx2++){
+      var px2=Math.round(x+dx2);
+      if(px2<0||px2>=scan.W) continue;
+      totB++;
+      if(scan.maskWhite[py2*scan.W+px2]) hitB++;
+    }
+  }
+  if(!totB) return true;
+  var fgwB=hitB/totB;
+  // 大窗白纸命中率：光斑核心 ≈1.0（纯亮无缝）、光斑中圈/骑缝 ≤0.85、
+  // 阴影白纸 0.55~0.88（与光斑中圈重叠，交给簇级「OCR 支持检查」区分——
+  // 真片区域至少会有一个检出哪怕被丢，光斑区什么字都没有）
+  return fgwB>0.55 && fgwB<0.999;
 }
 
 function buildScanBase(){
@@ -328,32 +365,58 @@ function drawScanGrid(){
       scanCtx.strokeRect(x-bw/2,y-bh/2,bw,bh);
     }
   }
-  // 散块模式：已拼结果框画在片子的实际照片位置（读数处），按文字方向旋转，拼好组按组着色
+  // 散块模式：已拼结果框画在片子的实际照片位置（读数处），按文字方向旋转，拼好组按组着色。
+  // 整块模式：对齐读数统一画在网格位（同尺寸同角度）——读数框边长随文字长短而异、
+  // 且文字中心≠片心，混在推算框里会显得歪歪扭扭；网格对齐后直接用网格位最整齐。
   if(ocrMode && scan.reads && scan.result){
     var k2=scan.W/scan.ocr.w;
+    var blk=!!scan.blockMode;
+    var bw2=Math.abs(scan.pitchX)*0.92, bh2=Math.abs(scan.pitchY)*0.92;
     scan.reads.forEach(function(rd){
       if(!scan.result.has(rd.idx)) return;
-      var x=rd.x*k2, y=rd.y*k2;
+      var x=rd.x*k2, y=rd.y*k2, side=readingSide(rd)*k2, ang=rd.ang||0, rect=false;
+      if(blk && scan.alignedIdx && scan.alignedIdx.has(rd.idx)){
+        var gp=scanCellXY(idxToRC(rd.idx));
+        x=gp.x; y=gp.y; ang=scan.blockAng||0; rect=true;   // 网格位 + 统一尺寸
+      }
       if(x<-60||y<-60||x>W+60||y>H+60) return;
-      var side=readingSide(rd)*k2;
       var susp=scan.suspIdx && scan.suspIdx.has(rd.idx);
       var gi=scan.grpMap ? scan.grpMap[rd.idx] : null;
       scanCtx.save();
-      scanCtx.translate(x,y); scanCtx.rotate(rd.ang||0);   // 框随文字方向摆放
+      scanCtx.translate(x,y); scanCtx.rotate(ang);   // 框随文字方向摆放
+      var fw = rect?bw2:side, fh = rect?bh2:side;
       scanCtx.fillStyle = susp ? "rgba(255,90,90,.30)"
         : gi!=null ? GRP_COLORS[gi%GRP_COLORS.length] : "rgba(40,230,120,.30)";
-      scanCtx.fillRect(-side/2,-side/2,side,side);
+      scanCtx.fillRect(-fw/2,-fh/2,fw,fh);
       scanCtx.strokeStyle = susp ? "rgba(255,80,80,.95)"
         : gi!=null ? GRP_COLORS[gi%GRP_COLORS.length].replace(".30",".95") : "rgba(60,255,140,.95)";
-      scanCtx.lineWidth=Math.max(1.2,side*0.05);
-      scanCtx.strokeRect(-side/2,-side/2,side,side);
+      scanCtx.lineWidth=Math.max(1.2,fw*0.05);
+      scanCtx.strokeRect(-fw/2,-fh/2,fw,fh);
       scanCtx.restore();
     });
+  }
+  // 手动增删的格子（无读数、非推算）：网格位橙色框，否则点了看不见
+  if(ocrMode && scan.result && scan.blockMode){
+    for(var mi=1;mi<=S.cfg.total;mi++){
+      if(!scan.result.has(mi) || scan.ocr.map.has(mi) || (scan.inferredIdx&&scan.inferredIdx.has(mi))) continue;
+      var gp=scanCellXY(idxToRC(mi));
+      if(gp.x<-40||gp.y<-40||gp.x>W+40||gp.y>H+40) continue;
+      var sw=Math.abs(scan.pitchX)*0.92, sh=Math.abs(scan.pitchY)*0.92;
+      scanCtx.save();
+      scanCtx.translate(gp.x,gp.y); scanCtx.rotate(scan.blockAng||0);
+      scanCtx.fillStyle="rgba(255,170,40,.30)";
+      scanCtx.fillRect(-sw/2,-sh/2,sw,sh);
+      scanCtx.strokeStyle="rgba(255,170,40,.95)";
+      scanCtx.lineWidth=Math.max(1.2,sw*0.05);
+      scanCtx.strokeRect(-sw/2,-sh/2,sw,sh);
+      scanCtx.restore();
+    }
   }
   // 拼好推算块：组内两点标定外推 + 前景证实 → 蓝框 + 蓝色编号
   if(ocrMode && scan.inferredIdx && scan.inferredIdx.size){
     var k3=scan.W/scan.ocr.w;
     scan.inferredIdx.forEach(function(idx){
+      if(scan.result && !scan.result.has(idx)) return;   // 被手动删除的不画
       var ip=scan.inferredPos[idx]; if(!ip) return;
       var x=ip.x*k3, y=ip.y*k3;
       if(x<-60||y<-60||x>W+60||y>H+60) return;
@@ -376,11 +439,16 @@ function drawScanGrid(){
       scanCtx.fillText(label, x, y-22);
     });
   }
-  // 散块模式：把读到的编号标在照片上（conf 着色）
+  // 散块模式：把读到的编号标在照片上（conf 着色）。整块模式下对齐读数的标签
+  // 跟着框一起放到网格位，与推算块混排时整列整齐。
   if(ocrMode && scan.ocr.results){
     var k=scan.W/scan.ocr.w;
     scan.ocr.results.forEach(function(r){
       var x=r.x*k, y=r.y*k;
+      if(scan.blockMode && scan.alignedIdx && scan.alignedIdx.has(r.idx)){
+        var gp=scanCellXY(idxToRC(r.idx));
+        x=gp.x; y=gp.y;
+      }
       if(x<-40||y<-40||x>W+40||y>H+40) return;
       var good=r.conf>=0.65, mid=r.conf>=0.5;
       var col=good?"rgba(60,255,140,.95)":(mid?"rgba(255,198,40,.95)":"rgba(160,175,195,.6)");
@@ -499,17 +567,35 @@ function recalcScan(){
     function grpSizeOf(i){ var gi=grpMap[i]; return gi==null?1:groups[gi].length; }
     defSusp.forEach(function(p){
       var ga=grpSizeOf(p[0])>=2, gb=grpSizeOf(p[1])>=2;
-      if(ga&&gb) return;                               // 两簇相邻摆放，不算可疑
-      if(ga) suspIdx.add(p[1]);                        // 已验证组一侧无嫌疑，只标单块
-      else if(gb) suspIdx.add(p[0]);
-      else { suspIdx.add(p[0]); suspIdx.add(p[1]); }
-      if(suspPairs.length<4) suspPairs.push(p[0]+"+"+p[1]);
+      if(ga&&gb) return;                               // 两簇相邻摆放，不算可疑（不展示）
+      if(ga) { suspIdx.add(p[1]); if(suspPairs.length<4) suspPairs.push(p[0]+"+"+p[1]); }
+      else if(gb) { suspIdx.add(p[0]); if(suspPairs.length<4) suspPairs.push(p[0]+"+"+p[1]); }
+      else { suspIdx.add(p[0]); suspIdx.add(p[1]);
+        if(suspPairs.length<4) suspPairs.push(p[0]+"+"+p[1]); }
     });
     // —— 组内两点标定 → 大片范围推算 + OCR 复核 ——
     // 每组用组内拼合对最小二乘解出局部网格基 (Vr,Vc)（两点定标的一般化），
-    // 外推成员包围盒±2 格的预测位置：前景在而无读数 → 该格编号由网格唯一
-    // 确定，直接推算入结果（蓝框）；有读数但离预测位很远 → 误读，标红。
+    // 从成员正贴邻格沿前景蔓延推算：该格编号由网格唯一确定，直接入结果（蓝框）；
+    // 有读数但离预测位很远 → 误读，标红。
+    // 散堆里 bbox±2 的远环与组并无拼合关系（跳格会猜错号），且邻簇的片靠着
+    // 堆放时前景无法区分——所以推算必须同时过四道几何关：
+    //   ① 贴邻：预测格 4 邻须是同组成员读数或本组已推算格（沿片蔓延，不跳格）
+    //   ② 接缝：与锚点连线中点的窗也是实前景（真拼合片边贴边；邻片只留凸头）
+    //   ③ 片心：预测位中心窗命中 ≥0.85（凸头/地板缝不够）
+    //   ④ 占位：预测位已被其他编号的读数占据 → 那是外簇的片，不推算
     var inferred=0, inferredIdx=new Set(), inferredPos={}, misread=0;
+    function whiteHit(x,y,rx){                         // scan 坐标椭圆小窗 maskWhite 命中率
+      var hit=0,tot=0;
+      for(var dy=-rx;dy<=rx;dy++){
+        var py2=Math.round(y+dy); if(py2<0||py2>=scan.H) continue;
+        for(var dx=-rx;dx<=rx;dx++){
+          var px2=Math.round(x+dx); if(px2<0||px2>=scan.W) continue;
+          if((dx*dx)/(rx*rx)+(dy*dy)/(rx*rx)>1) continue;
+          tot++; if(scan.maskWhite[py2*scan.W+px2]) hit++;
+        }
+      }
+      return tot>0?hit/tot:0;
+    }
     groups.forEach(function(members){
       var gi=grpMap[members[0]];
       var gp=vpairs.filter(function(p){ return grpMap[p.a]===gi; });
@@ -542,41 +628,79 @@ function recalcScan(){
       rmin=Math.max(1,rmin-2); rmax=Math.min(S.rows,rmax+2);
       cmin=Math.max(1,cmin-2); cmax=Math.min(S.cfg.cols,cmax+2);
       var k=scan.W/scan.ocr.w, added=0;
-      for(var r=rmin;r<=rmax;r++)for(var c=cmin;c<=cmax;c++){
-        var idx=rcToIdx(r,c);                          // r/c 已夹在合法域内
-        if(idx<1||idx>S.cfg.total||inferredIdx.has(idx)) continue;
-        var px=seed.x+(r-p0.row)*Vrx+(c-p0.col)*Vcx;
-        var py=seed.y+(r-p0.row)*Vry+(c-p0.col)*Vcy;
-        if(px<side*0.35||py<side*0.35||px>scan.ocr.w-side*0.35||py>scan.ocr.h-side*0.35) continue;
-        if(samplePiece(px*k,py*k,side*k*0.28,side*k*0.28)<=0.5) continue;
-        var rd=scan.ocr.map.get(idx);
-        if(rd){
-          if(Math.hypot(rd.x-px,rd.y-py)>side*0.55){   // 有读数但不在网格位 → 误读
-            suspIdx.add(idx); misread++;
-            if(suspPairs.length<4) suspPairs.push(idx+"≠网格位");
+      var rx=side*k*0.28;
+      var groupSet={}, chain={};                     // 蔓延锚点：本组成员读数 / 本组已推算格
+      members.forEach(function(i){ groupSet[i]=true; });
+      for(var pass=0; pass<4; pass++){               // 多轮蔓延：链式锚点逐轮生长
+        var fresh=0;
+        for(var r=rmin;r<=rmax;r++)for(var c=cmin;c<=cmax;c++){
+          var idx=rcToIdx(r,c);                          // r/c 已夹在合法域内
+          if(idx<1||idx>S.cfg.total||inferredIdx.has(idx)) continue;
+          var px=seed.x+(r-p0.row)*Vrx+(c-p0.col)*Vcx;
+          var py=seed.y+(r-p0.row)*Vry+(c-p0.col)*Vcy;
+          if(px<side*0.35||py<side*0.35||px>scan.ocr.w-side*0.35||py>scan.ocr.h-side*0.35) continue;
+          // ① 贴邻 + ② 接缝：预测格须与本组成员/已推算格正贴，且连线中点也是实前景
+          var seam=0;
+          var nb=[[r+1,c],[r-1,c],[r,c+1],[r,c-1]];
+          for(var n=0;n<4;n++){
+            var rr=nb[n][0], cc=nb[n][1];
+            if(rr<1||cc<1||rr>S.rows||cc>S.cfg.cols) continue;
+            var j=rcToIdx(rr,cc), ax=null, ay=0;
+            if(groupSet[j]){ var r2=scan.ocr.map.get(j); if(r2){ ax=r2.x; ay=r2.y; } }
+            else if(chain[j]){ ax=chain[j].x; ay=chain[j].y; }
+            if(ax==null) continue;
+            var v=whiteHit((px+ax)/2*k,(py+ay)/2*k,rx);
+            if(v>seam) seam=v;
           }
-        } else {
-          set.add(idx); inferredIdx.add(idx); inferred++;
-          inferredPos[idx]={x:px,y:py,ang:seed.ang,side:side};
-          if(++added>12) return;                       // 单组外推上限，防映射意外扩散
+          if(seam<0.35) continue;                        // 无贴邻或中间是地板/凸头 → 不外推
+          // ③ 片心窗要实
+          var cellV=whiteHit(px*k,py*k,rx);
+          if(cellV<0.85) continue;
+          // ④ 占位：预测位被其他编号的读数占据 → 那是外簇/单片的片
+          var occ=null;
+          scan.ocr.map.forEach(function(r3,i3){
+            if(occ!=null) return;
+            if(Math.hypot(r3.x-px,r3.y-py)<side*0.55) occ=i3;
+          });
+          var rd=occ!=null?scan.ocr.map.get(occ):scan.ocr.map.get(idx);
+          if(rd){
+            // occ 是别的编号 → 预测位被外簇/单片的读数占着（贴着堆放），
+            // rd 贴近预测位，自然跳过（不标不推）；occ 为空而同号读数在远处 → 误读
+            if(Math.hypot(rd.x-px,rd.y-py)>side*0.55){   // 有读数但不在网格位 → 误读
+              suspIdx.add(idx); misread++;
+              if(suspPairs.length<4) suspPairs.push(idx+"≠网格位");
+            }
+          } else {
+            set.add(idx); inferredIdx.add(idx); inferred++;
+            inferredPos[idx]={x:px,y:py,ang:seed.ang,side:side};
+            chain[idx]={x:px,y:py};
+            fresh++; added++;
+            if(added>12){ pass=99; break; }              // 单组外推上限，防映射意外扩散
+          }
         }
+        if(!fresh) break;
       }
     });
     // —— 整块照片检测：读数与全局网格映射吻合（中位残差 < 0.5 格距）——
     // 整块拼图按网格摆放，自动标定可信；散块照片映射是 garbage（残差 10+ 格距），
-    // 物理上不可能误判。整块图不必逐格 OCR：前景在的格子编号由网格唯一确定，
-    // 直接推算入结果（蓝框）；有读数但偏离网格位 → 误读，标红（OCR 复核）。
+    // 物理上不可能误判。整块图不必逐格 OCR：前景在的格子编号由网格唯一确定。
+    // 推算用 BFS 从「对齐读数」的格子沿前景蔓延——孤立的散片小群（物理位置与
+    // 编号网格无关）与主体之间隔木地板，蔓延不到，不会被错误推算成别的编号。
     var k=scan.W/scan.ocr.w;
     var mp=(Math.abs(scan.pitchX)+Math.abs(scan.pitchY))/2;
+    var alignedIdx=new Set();
     var resid=[];
     scan.ocr.map.forEach(function(r,idx){
       if(r.conf<0.5||idx<1||idx>S.cfg.total) return;
       var q=scanCellXY(idxToRC(idx));
-      resid.push(Math.hypot(q.x-r.x*k, q.y-r.y*k));
+      var d=Math.hypot(q.x-r.x*k, q.y-r.y*k);
+      resid.push(d);
+      if(d<mp*0.55) alignedIdx.add(idx);
     });
     resid.sort(function(a,b){ return a-b; });
     var medD=resid.length?resid[resid.length>>1]:1e9;
     scan.blockMode = resid.length>=3 && medD < mp*0.5;
+    scan.alignedIdx=alignedIdx;
     if(scan.blockMode){
       // 整块统一文字方向：ang 周期 π，用 2θ 向量均值避免平均抵消
       var sx=0, sy=0, na=0;
@@ -584,26 +708,77 @@ function recalcScan(){
         if(r.conf>=0.5 && isFinite(r.ang)){ sx+=Math.cos(2*r.ang); sy+=Math.sin(2*r.ang); na++; }
       });
       var blkAng = na ? 0.5*Math.atan2(sy,sx) : 0;
-      var rx=Math.abs(scan.pitchX)*0.26, ry=Math.abs(scan.pitchY)*0.26;
-      for(var i=1;i<=S.cfg.total;i++){
-        var p=idxToRC(i), q=scanCellXY(p), x=q.x, y=q.y;
-        if(x<rx||y<ry||x>scan.W-rx||y>scan.H-ry) continue;
-        var rd=scan.ocr.map.get(i);
-        var off = rd ? Math.hypot(rd.x*k-x, rd.y*k-y) : 0;
-        if(samplePiece(x,y,rx,ry)>0.55){
-          set.add(i);
-          if(rd && off>mp*0.55){                        // 前景在、读数却在别处 → 误读
-            if(!suspIdx.has(i)){ suspIdx.add(i); misread++;
-              if(suspPairs.length<4) suspPairs.push(i+"≠网格位"); }
-          } else if(!rd && !inferredIdx.has(i)){        // 前景在、无读数 → 推算
-            inferredIdx.add(i); inferred++;
-            inferredPos[i]={ x:x/k, y:y/k, ang:blkAng, side:mp/k };
+      scan.blockAng=blkAng;
+      var bw=Math.abs(scan.pitchX), bh=Math.abs(scan.pitchY);
+      var rx=bw*0.26, ry=bh*0.26;
+      function fgAt(idx){
+        var p=idxToRC(idx), q=scanCellXY(p);
+        if(q.x<rx||q.y<ry||q.x>scan.W-rx||q.y>scan.H-ry) return false;
+        return isPieceAt(q.x,q.y,rx,ry,true);
+      }
+      function pushInfer(idx){
+        if(inferredIdx.has(idx)) return;
+        var p=idxToRC(idx), q=scanCellXY(p);
+        set.add(idx);                                  // 推算块入结果
+        inferredIdx.add(idx); inferred++;
+        inferredPos[idx]={ x:q.x/k, y:q.y/k, ang:blkAng, side:Math.min(bw,bh)/k };
+      }
+      var visited=new Set(alignedIdx);
+      var queue=Array.from(alignedIdx);
+      for(var front=0; front<queue.length; front++){
+        var p0=idxToRC(queue[front]);
+        var nei=[[p0.row+1,p0.col],[p0.row-1,p0.col],[p0.row,p0.col+1],[p0.row,p0.col-1]];
+        for(var ni=0;ni<4;ni++){
+          var rr=nei[ni][0], cc=nei[ni][1];
+          if(rr<1||cc<1||rr>S.rows||cc>S.cfg.cols) continue;
+          var j=rcToIdx(rr,cc);
+          if(j<1||j>S.cfg.total||visited.has(j)) continue;
+          visited.add(j);
+          if(!fgAt(j)) continue;                       // 前景不在：不蔓延（隔离散片群止步于此）
+          var rd=scan.ocr.map.get(j);
+          if(rd && alignedIdx.has(j)){ queue.push(j); } // 对齐读数格：继续蔓延
+          else if(rd){                                  // 非对齐读数占了此号：矛盾，蓝框+核对
+            pushInfer(j); queue.push(j);
+            if(!grpMap[rd.idx] && !suspIdx.has(rd.idx)){ // 组内读数豁免（整群位置偏移，自洽）
+              suspIdx.add(rd.idx); misread++;
+              if(suspPairs.length<4) suspPairs.push(rd.idx+"≠网格位");
+            }
           }
-        } else if(rd && off>mp*0.55){                   // 前景不在、读数也偏 → 误读
-          if(!suspIdx.has(i)){ suspIdx.add(i); misread++;
-            if(suspPairs.length<4) suspPairs.push(i+"≠网格位"); }
+          else { pushInfer(j); queue.push(j); }         // 前景在、无读数 → 推算
         }
       }
+      // —— 簇级 OCR 支持检查 ——
+      // 光斑/杂色前景可能骗过逐格判定（灰尘暗点、渐变白），但真片区域至少会有
+      // 一个 OCR 检出（哪怕因 conf/字数不足被丢弃）。按 4 邻把推算格分簇：
+      // 簇内「1.0 格距内有任何置信度读数」的格子占比 ≥25% 才保留，否则整簇剔除。
+      var infArr=Array.from(inferredIdx);
+      var infSet=new Set(infArr);
+      var seen2=new Set();
+      var arr=scan.ocr.results||[];
+      infArr.forEach(function(seed){
+        if(seen2.has(seed)) return;
+        var cluster=[], stk=[seed]; seen2.add(seed);
+        while(stk.length){
+          var ci=stk.pop(); cluster.push(ci);
+          var pc=idxToRC(ci);
+          var nei2=[[pc.row+1,pc.col],[pc.row-1,pc.col],[pc.row,pc.col+1],[pc.row,pc.col-1]];
+          for(var q4=0;q4<4;q4++){
+            if(nei2[q4][0]<1||nei2[q4][1]<1||nei2[q4][0]>S.rows||nei2[q4][1]>S.cfg.cols) continue;
+            var nj=rcToIdx(nei2[q4][0],nei2[q4][1]);
+            if(infSet.has(nj)&&!seen2.has(nj)){ seen2.add(nj); stk.push(nj); }
+          }
+        }
+        var supN=0;
+        for(var z2=0;z2<cluster.length;z2++){
+          var pc2=idxToRC(cluster[z2]), q2=scanCellXY(pc2);
+          for(var w2=0;w2<arr.length;w2++){
+            if(Math.hypot(arr[w2].x*k-q2.x, arr[w2].y*k-q2.y)<mp){ supN++; break; }
+          }
+        }
+        if(supN*4<cluster.length) cluster.forEach(function(ci){
+          set.delete(ci); inferredIdx.delete(ci); delete inferredPos[ci]; inferred--;
+        });
+      });
     }
     scan.reads=reads; scan.groups=groups; scan.grpMap=grpMap;
     scan.suspIdx=suspIdx.size?suspIdx:null;
@@ -613,6 +788,7 @@ function recalcScan(){
     scan.reads=null; scan.groups=null; scan.grpMap=null;
     scan.suspIdx=null; scan.suspPairs=null;
     scan.inferred=0; scan.inferredIdx=null; scan.inferredPos=null;
+    scan.blockMode=false; scan.alignedIdx=null; scan.blockAng=0;
     var rx=Math.abs(scan.pitchX)*0.26, ry=Math.abs(scan.pitchY)*0.26;
     for(var i=1;i<=S.cfg.total;i++){
       var p=idxToRC(i);
@@ -620,7 +796,7 @@ function recalcScan(){
       var x=q.x, y=q.y;
       if(x<rx||y<ry||x>scan.W-rx||y>scan.H-ry) continue;
       checked++;
-      if(samplePiece(x,y,rx,ry)>0.55){
+      if(isPieceAt(x,y,rx,ry,true)){
         set.add(i);
         if(S.states[i]!==1) newly++;
       }
@@ -700,6 +876,7 @@ function resetScan(keepImg){
   scan.calibrated=false;
   scan.rot=false;
   scan.ocr=null; scan.ocrAuto=false; scan.blockMode=false;
+  scan.alignedIdx=null; scan.blockAng=0;
   scan.reads=null; scan.groups=null; scan.grpMap=null;
   scan.suspIdx=null; scan.suspPairs=null;
   scan.inferred=0; scan.inferredIdx=null; scan.inferredPos=null;
@@ -732,6 +909,7 @@ $("bScanHelp").addEventListener("click",function(){
 document.addEventListener("fullscreenchange",scanHelpSync);
 document.addEventListener("webkitfullscreenchange",scanHelpSync);
 scanHelpSync();
+osvcProbe();                    // 模块加载即探测一次（照片加载早于打开扫描页时也有状态）
 
 $("bScan").addEventListener("click",function(){
   hideLocCard();
@@ -861,9 +1039,27 @@ function scanImgXY(clientX,clientY){
   var r=scanCanvas.getBoundingClientRect();
   return { x:(clientX-r.left)*(scan.W/r.width), y:(clientY-r.top)*(scan.H/r.height) };
 }
-// 图像坐标 → 最近的格子编号
+// 图像坐标 → 最近的格子编号。
+// 编号读取模式下先命中最近的读数框/推算框（散块照片网格映射与实际摆放无关，
+// 按格子命中会点空），空白处仅整块模式（网格对齐）才按格子增删。
 function scanHitIdx(x,y){
   if(!scan.calibrated) return null;
+  var ocrMode=scan.ocr && scan.ocr.map.size>=2;
+  if(ocrMode){
+    var k=scan.W/scan.ocr.w, best=null, bd=1e9;
+    (scan.reads||[]).forEach(function(r){
+      var d=Math.hypot(r.x*k-x, r.y*k-y);
+      var lim=readingSide(r)*k*0.75;
+      if(d<lim && d<bd){ bd=d; best=r.idx; }
+    });
+    if(scan.inferredPos) Object.keys(scan.inferredPos).forEach(function(key){
+      var ip=scan.inferredPos[key];
+      var d=Math.hypot(ip.x*k-x, ip.y*k-y);
+      if(d<ip.side*k*0.75 && d<bd){ bd=d; best=+key; }
+    });
+    if(best!=null) return best;
+    if(!scan.blockMode) return null;               // 散块：空白处不增格
+  }
   var c=scanXYCell(x,y), col=c.col, row=c.row;
   if(row<1||col<1||row>S.rows||col>S.cfg.cols) return null;
   var i=rcToIdx(row,col);
