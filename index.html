@@ -242,7 +242,7 @@
             1. 选择一张<b>拼图正面朝上</b>或背面的照片<br>
             2. 系统会<b>自动读取片上编号</b>并完成标定（散块照片也能认）；失败时手动点两块拼图中心并输入编号<br>
             3. 有偏差就用顶部工具条：<b>移动照片</b>缩放看细节 · <b>微调网格</b>整体挪 · <b>增删结果</b>逐格改<br>
-            <span class="sn">两块要在不同行不同列、相距越远越准；拼放方向与编号差 90° 也能自动适配，网格不对点「⟳ 转向」；只把识别到的块标为已拼，不会动其它块。「应用并引导」会在应用后按块逐个引导摆放。</span>
+            <span class="sn">两块要在不同行不同列、相距越远越准；拼放方向与编号差 90° 也能自动适配，网格不对点「⟳ 转向」；只把识别到的块标为已拼，不会动其它块。「引导摆放」不会一次全铺上去：逐条提示目标（整组算一条），点「放好了」才落一条。</span>
           </div>
         </div>
         <div class="scan-nudge" id="scanNudge">
@@ -257,7 +257,7 @@
         <div style="flex:1"></div>
         <div class="scan-acts">
           <button class="btn ok" id="bApplyScan" disabled>应用识别结果</button>
-          <button class="btn primary" id="bApplyGuide" disabled style="display:none">应用并引导摆放</button>
+          <button class="btn primary" id="bApplyGuide" disabled style="display:none">引导摆放</button>
           <button class="btn ghost sm" id="bRescan">重新标定</button>
         </div>
       </div>

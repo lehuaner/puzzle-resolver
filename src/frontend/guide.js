@@ -7,17 +7,39 @@ import { pushUndo } from "./interact.js";
 import { markChange } from "./sync.js";
 
 /* ================= 摆放引导 =================
-   扫描应用后，把本次新增的块排成一条队列，底部浮条逐条提示：
-     · 先「离整图近的」——贴着已拼/待定区的那几块，顺着整体往外长；
-     · 再「成块组」——OCR 认出来的拼好组，**一组算一次引导**（不是一块一次），
-       一次把连着的那几块一起放，省得来回找。
-   · 每条都会在浮条左边给一张**照片小窗**，把目标块在刚识别的那张照片上的
-     位置圈出来——不然只报编号，人还得在照片里满地找"是哪一块"。
-   高亮当前块（金色脉冲描边），块跑出视口时自动平移找回。
+   「引导摆放」不再一次性把识别结果全铺到棋盘（那样一进引导就已经全绿了，
+   引导本身没意义）。现在改成**逐条应用**：
+     · 进引导时棋盘只有本来就拼好的块；
+     · 浮条逐条提示目标（单块，或 OCR 认出来的**整组算一条**），
+       目标块在棋盘上**持续闪烁**（整组就整组一起闪），直到用户点下一步；
+     · 「✓ 放好了」→ 这一条（单块/整组）才真正写进棋盘（没连主片区的标待定）；
+     · 「跳过」→ 保持未拼，直接下一条；中途退出则没确认的都留在未拼。
+   · 每条都带一张**照片小窗**，圈出目标块在刚识别的那张照片上的位置。
    状态放 S.guideActive（共享 store），避免与 interact.js 循环依赖；
    照片位置由 scan.js 通过 setGuideProviders 注入（避免 scan↔guide 循环 import）。 */
 
-var G={ q:[], k:0, cur:[] };
+var G={ q:[], k:0, cur:[], done:0, blinkT:null, off:false };
+
+/* 当前目标持续闪烁：每 520ms 在 .gcur 上切一次 .blinkOff（CSS 里把描边藏起来）。
+   单块闪一块、整组闪整组；点「放好了 / 跳过」后 showCur 会给新目标重新挂上。 */
+function startBlink(){
+  stopBlink();
+  G.off=false;
+  G.blinkT=setInterval(function(){
+    if(!S.guideActive){ stopBlink(); return; }
+    G.off=!G.off;
+    (G.cur||[]).forEach(function(i){
+      var el=S.cells[i]; if(!el) return;
+      if(G.off) el.classList.add("blinkOff"); else el.classList.remove("blinkOff");
+    });
+  }, 520);
+}
+function stopBlink(){
+  if(G.blinkT){ clearInterval(G.blinkT); G.blinkT=null; }
+  (G.cur||[]).forEach(function(i){
+    var el=S.cells[i]; if(el) el.classList.remove("blinkOff");
+  });
+}
 
 var infoProv=null, drawProv=null;
 /* scan.js 注入：infoFn() → {grpOf:{idx:组号}}；drawFn(canvas, ids) → 画出照片小窗 */
@@ -98,7 +120,11 @@ function drawPhoto(ids){
 }
 
 function clearGcur(){
-  (G.cur||[]).forEach(function(i){ if(S.cells[i]) S.cells[i].classList.remove("gcur"); });
+  stopBlink();
+  (G.cur||[]).forEach(function(i){
+    var el=S.cells[i]; if(!el) return;
+    el.classList.remove("gcur"); el.classList.remove("blinkOff");
+  });
 }
 
 function showCur(){
@@ -116,34 +142,59 @@ function showCur(){
     $("gdInfo").textContent="整组一起放："+it.ids.slice(0,4).map(fmt).join("·")
       +(it.ids.length>4?"…":"");
   }
-  $("gdStep").textContent=(G.k+1)+"/"+G.q.length;
+  $("gdStep").textContent=(G.k+1)+"/"+G.q.length+(G.done?" · 已放 "+G.done:"");
   drawPhoto(it.ids);
   ensureVisible(it.ids);
+  startBlink();                       // 闪到用户点下一步为止
 }
 
 function finishGuide(){
-  var n=G.q.length;
+  var n=G.q.length, d=G.done;
   guideExit();
-  toast("引导完成 · 共 "+n+" 条");
+  toast("引导完成 · "+n+" 条，已放 "+d+" 条"+(d<n?("，跳过 "+(n-d)+" 条"):""));
   vibrate([30,40,30]);
 }
 
-// ok=true「放好了」：当前条目（单块 / 整组）标完成（含相连待定自动转完成）后推进；
-// ok=false「跳过」：保持原状态只推进。
+/* 把一条引导（单块或整组）真正写进棋盘：与「应用」同样的口径——
+   先按应用前的主片区判定，连不上主片区的标「待定」（黄），其余转完成。 */
+function applyItem(ids){
+  var base=new Set();
+  for(var k=1;k<=S.cfg.total;k++){ if(S.states[k]===1) base.add(k); }
+  var orig=new Map();
+  ids.forEach(function(i){ if(i!=null && S.states[i]!==1) orig.set(i,S.states[i]); });
+  if(!orig.size) return { n:0, demoted:0 };
+  var mainSet=new Set(mainComp(base));   // 注意：base 为空时它返回「目前棋盘上最大的那片」
+  var hadMain=base.size>0;               // 这一条之前棋盘上有主片区吗
+  orig.forEach(function(v,k){ S.states[k]=1; });
+  /* 棋盘上一块都还没拼过：这次放的这条本身就是主片区，不能判「连不上」。
+     （base 为空时 mainComp 只能看棋盘上已有的块，可能是别处的待定块 → 会把这一条全判成待定） */
+  if(hadMain) orig.forEach(function(v,k){
+    if(S.states[k]===1 && !mainSet.has(k)){ S.states[k]=3; }
+  });
+  promoteConnected().forEach(function(c){ if(!orig.has(c[0])) orig.set(c[0],c[1]); });
+  /* 待定数要**在 promoteConnected 之后**数：刚判的待定如果其实连着主片区，
+     上面那步会把它们转回完成（也有它自己连成一片的情况），先数就报了假警。 */
+  var demoted=0;
+  orig.forEach(function(v,k){ if(S.states[k]===3) demoted++; });
+  orig.forEach(function(v,k){ paint(k); markChange(k); });
+  pushUndo(Array.from(orig.entries()));
+  afterChange();
+  return { n:orig.size, demoted:demoted };
+}
+
+// ok=true「放好了」：这一条（单块 / 整组）写进棋盘；ok=false「跳过」：保持未拼。
 function guideNext(ok){
   if(!S.guideActive) return;
-  var ids=G.cur||[];
+  var ids=(G.cur||[]).slice();
   if(ok){
-    var orig=new Map();
-    ids.forEach(function(i){ if(i!=null && S.states[i]!==1) orig.set(i,S.states[i]); });
-    if(orig.size){
-      orig.forEach(function(v,k){ S.states[k]=1; });
-      promoteConnected().forEach(function(c){ if(!orig.has(c[0])) orig.set(c[0],c[1]); });
-      orig.forEach(function(v,k){ paint(k); markChange(k); });
-      pushUndo(Array.from(orig.entries()));
-      afterChange();
+    var r=applyItem(ids);
+    if(r.n){
+      G.done++;
+      toast("已放 "+r.n+" 块"+(r.demoted?("，其中 "+r.demoted+" 块待定（还没连上主片区）"):""));
       vibrate(15);
     }
+  } else if(ids.length){
+    toast("已跳过 "+ids.length+" 块（保持未拼）");
   }
   G.k++;
   if(G.k>=G.q.length){ finishGuide(); return; }
@@ -158,25 +209,30 @@ export function startGuide(targets){
     clearGcur();
     G.q=[]; G.cur=[];
   }
-  G.q=q; G.k=0;
+  G.q=q; G.k=0; G.done=0;
   S.guideActive=true;
   document.body.classList.add("guideon");
   showCur();
   var nG=q.filter(function(it){ return it.group; }).length;
   toast("引导摆放 · "+q.length+" 条（先放离整图近的 "
-    +(q.length-nG)+" 块"+(nG?("，再 "+nG+" 个成块组"):"")+"）");
+    +(q.length-nG)+" 块"+(nG?("，再 "+nG+" 个成块组"):"")+"）· 放好一条才落一条");
 }
 
 export function guideExit(){
   if(!S.guideActive) return;
+  var left=G.q.length-G.k-(G.k<G.q.length?1:0);   // 还没轮到的条数
   clearGcur();
-  G.q=[]; G.k=0; G.cur=[];
+  G.q=[]; G.k=0; G.cur=[]; G.done=0;
   S.guideActive=false;
   document.body.classList.remove("guideon");
   var cv=$("gdPic"); if(cv) cv.style.display="none";
+  return left;
 }
 
 $("gdOk").addEventListener("click",function(){ guideNext(true); });
 $("gdMain").addEventListener("click",function(){ guideNext(true); });   // 大目标：点编号区=放好了
 $("gdSkip").addEventListener("click",function(){ guideNext(false); });
-$("gdExit").addEventListener("click",guideExit);
+$("gdExit").addEventListener("click",function(){
+  var left=guideExit();
+  toast(left>0 ? ("已退出引导 · 还有 "+left+" 条没放（保持未拼）") : "已退出引导");
+});

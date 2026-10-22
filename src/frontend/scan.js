@@ -361,6 +361,14 @@ function scanCellXY(p){
   return { x:scan.ax+(p.col-scan.ac)*scan.pitchX,
            y:scan.ay+(p.row-scan.ar)*scan.pitchY };
 }
+/* 标定求解出来的原始网格位（不含「微调网格」的人工平移）。
+   识别判据（对齐/残差/可疑）一律按它算：微调网格只是把格子挪到看着更顺的位置，
+   不该反过来让识别结论变化（否则拖一下就掉一片、可疑全跑出来）。 */
+function scanCellBase(p){
+  var ax=(scan.baseAx!=null?scan.baseAx:scan.ax), ay=(scan.baseAy!=null?scan.baseAy:scan.ay);
+  if(scan.rot) return { x:ax+(p.row-scan.ar)*scan.pitchX, y:ay+(p.col-scan.ac)*scan.pitchY };
+  return { x:ax+(p.col-scan.ac)*scan.pitchX, y:ay+(p.row-scan.ar)*scan.pitchY };
+}
 // 照片坐标 → 最近行列（增删模式点选格子用）
 function scanXYCell(x,y){
   if(scan.rot) return { row:Math.round((x-scan.ax)/scan.pitchX)+scan.ar,
@@ -374,9 +382,10 @@ function drawScanGrid(){
   var W=scan.W,H=scan.H;
   var bw=px*0.66, bh=py*0.66;
   var ocrMode=scan.ocr && scan.ocr.map.size>=2;
-  // 编号读取模式一律不画灰格底框：散块照片上网格映射是 garbage（画了干扰拼好组），
+  // 编号读取模式默认不画灰格底框：散块照片上网格映射是 garbage（画了干扰拼好组），
   // 整块照片上格子被结果框/推算框铺满，灰格只是噪点。手动标定（非 OCR）才画。
-  var showGrid = !ocrMode;
+  // 例外：「微调网格」模式一定画——调格子的时候得看得见格子，否则拖了没反应。
+  var showGrid = !ocrMode || scan.mode==="grid";
   var GRP_COLORS=["rgba(80,200,255,.30)","rgba(255,170,80,.30)","rgba(200,120,255,.30)",
                   "rgba(120,255,200,.30)","rgba(255,120,180,.30)","rgba(200,255,90,.30)",
                   "rgba(140,160,255,.30)","rgba(255,220,90,.30)"];
@@ -580,9 +589,11 @@ function drawScanGrid(){
   }
   // 散块模式：把读到的编号标在照片上（conf 着色）。整块模式下对齐读数的标签
   // 跟着框一起放到网格位，与推算块混排时整列整齐。
-  if(ocrMode && scan.ocr.results){
+  // **遍历 ocr.map 而不是 ocr.results**：复核漏读 / 补漏 / 人工补块 / 改号插进来的
+  // 读数只在 map 里（results 是原始 OCR 输出），遍历 results 会让这些框光秃秃没编号。
+  if(ocrMode && scan.ocr.map){
     var k=scan.W/scan.ocr.w;
-    scan.ocr.results.forEach(function(r){
+    scan.ocr.map.forEach(function(r){
       if(scan.ocr.drop && scan.ocr.drop.has(r.idx)) return;   // ✕ 删掉的：连十字和编号一起消失
       var x=r.x*k, y=r.y*k;
       if(scan.blockMode && scan.alignedIdx && scan.alignedIdx.has(r.idx)){
@@ -845,6 +856,8 @@ function recalcScan(){
               if(suspPairs.length<4) suspPairs.push(idx+"≠网格位");
             }
           } else {
+            // 人工删掉的推算块：这个编号不再外推（散块模式的外推入口，同 pushInfer）
+            if(scan.inferDrop && scan.inferDrop.has(idx)) continue;
             set.add(idx); inferredIdx.add(idx); inferred++;
             inferredPos[idx]={x:px,y:py,ang:seed.ang,side:side,grp:gi,weak:false};
             chain[idx]={x:px,y:py};
@@ -924,14 +937,18 @@ function recalcScan(){
     var resid=[];
     scan.ocr.map.forEach(function(r,idx){
       if(r.conf<0.5||idx<1||idx>S.cfg.total) return;
-      var q=scanCellXY(idxToRC(idx));
+      var q=scanCellBase(idxToRC(idx));      // 判据按标定解，不吃人工微调
       var d=Math.hypot(q.x-r.x*k, q.y-r.y*k);
       resid.push(d);
       if(d<mp*0.55) alignedIdx.add(idx);
     });
     resid.sort(function(a,b){ return a-b; });
     var medD=resid.length?resid[resid.length>>1]:1e9;
-    scan.blockMode = resid.length>=3 && medD < mp*0.5;
+    var bmAuto = resid.length>=3 && medD < mp*0.5;
+    /* 人工微调过网格就**保持**整块模式：拖格子本来就会让残差变大，若照旧自动裁决，
+       第一下拖动就把 blockMode 判掉、所有框弹回读数原位 —— 表现成「微调网格拖不动图框」。
+       （重新标定会清掉 gridAdj，恢复自动裁决） */
+    scan.blockMode = (scan.gridAdj && scan.blockMode) ? true : bmAuto;
     scan.alignedIdx=alignedIdx;
     // 整块照片上网格映射可信 → 直接用它裁决，不再靠「两块一个片距」猜：
     //   读数没落在自己编号该在的格子上（d > 0.55 格距）、又不是「整群偏移的组」
@@ -941,7 +958,7 @@ function recalcScan(){
       scan.ocr.map.forEach(function(r,idx){
         if(r.conf<0.5||idx<1||idx>S.cfg.total) return;
         if(grpMap[idx]!=null) return;                 // 组内整群位置偏移，自洽
-        var q0=scanCellXY(idxToRC(idx));
+        var q0=scanCellBase(idxToRC(idx));             // 同上：用标定解判，不受微调影响
         var d0=Math.hypot(q0.x-r.x*k, q0.y-r.y*k);
         if(d0>mp*0.55 && !suspIdx.has(idx)){
           suspIdx.add(idx); misread++;
@@ -961,12 +978,13 @@ function recalcScan(){
       var bw=Math.abs(scan.pitchX), bh=Math.abs(scan.pitchY);
       var rx=bw*0.26, ry=bh*0.26;
       function fgAt(idx){
-        var p=idxToRC(idx), q=scanCellXY(p);
+        var p=idxToRC(idx), q=scanCellBase(p);   // 前景判定按标定解（微调只影响画在哪）
         if(q.x<rx||q.y<ry||q.x>scan.W-rx||q.y>scan.H-ry) return false;
         return isPieceAt(q.x,q.y,rx,ry,true);
       }
       function pushInfer(idx){
         if(inferredIdx.has(idx)) return;
+        if(scan.inferDrop && scan.inferDrop.has(idx)) return;   // 人工删掉的推算块：不再推算
         var p=idxToRC(idx), q=scanCellXY(p);
         set.add(idx);                                  // 推算块入结果
         inferredIdx.add(idx); inferred++;
@@ -1055,7 +1073,14 @@ function recalcScan(){
     scan.loosePairs=loosePairs;
     scan.inferred=inferred; scan.inferredIdx=inferredIdx; scan.inferredPos=inferredPos;
     scan.inferredWeak=weakN;
-    scan.weakCells = scan.blockMode ? [] : weakCells;   // 整块模式编号由网格唯一确定，无二义位
+    scan.weakCells = scan.blockMode ? [] : weakCells.filter(function(w){
+      // 人工点过「删掉这处提示」的位置不再骚扰（按片宽 0.7 半径判同）
+      var wd=scan.weakDrop||[];
+      for(var wi=0;wi<wd.length;wi++){
+        if(Math.hypot(wd[wi].x-w.x, wd[wi].y-w.y) < Math.max(w.side*0.7, 10)) return false;
+      }
+      return true;
+    });
     // 漏识别片：OCR 整句漏检的片（前景实、有墨迹、周围无主）→ 灰虚线「?」提示
     scan.gaps = scanGaps(reads, inferredPos);
   } else {
@@ -1131,8 +1156,10 @@ function solveScan(forceRot){
   if(Math.abs(pitchX)<6||Math.abs(pitchY)<6){ toast("标定距离太近，请选相距更远的两块"); return false; }
   scan.rot=rot;
   scan.ax=a.x; scan.ay=a.y; scan.ac=pa.col; scan.ar=pa.row;
+  scan.baseAx=a.x; scan.baseAy=a.y;      // 标定解（「微调网格」只挪 ax/ay，判据仍按这份）
   scan.pitchX=pitchX; scan.pitchY=pitchY;
   scan.calibrated=true;
+  scan.gridAdj=false;             // 重新求解 = 回到自动裁决（人工微调的痕迹清零）
   $("scanNudge").style.display="flex";
   recalcScan();
   return true;
@@ -1170,6 +1197,9 @@ function resetScan(keepImg,keepOcr){
   scan.reads=null; scan.groups=null; scan.grpMap=null;
   scan.suspIdx=null; scan.suspPairs=null; scan.loosePairs=null;
   scan.gaps=null; scan.gapTried=[];      // 补漏跑过但读不出编号的位置
+  scan.weakDrop=[];                      // 人工「删掉这处提示」的二义位/漏读位
+  scan.inferDrop=new Set();              // 人工删掉的推算块编号（不再推算）
+  scan.gridAdj=false;                    // 人工微调过网格？（保持整块模式，别被自动裁决推翻）
   scan.suspAck=new Set();                       // 人工点过「无误」的可疑块
   scan.review=null;                             // 可疑点逐块审查状态
   var rvp=$("scanRv"); if(rvp) rvp.style.display="none";
@@ -1339,7 +1369,7 @@ function autoCalibrate(okList){
     +"<b>绿框</b>＝识别为已拼（随文字方向摆放） · 同色框＝<b>拼好组</b> · <b>蓝框</b>＝组内推算 · <b>红框</b>＝疑似拼错/误读<br>"
     +"顶部工具条：<b>移动照片</b>查看细节 · <b>微调网格</b>整体挪动 · <b>增删结果</b>逐格修正<br>"
     +"<b>增删结果</b>模式下点<b>没有框的片</b>可以输入编号把它补进结果（OCR 漏读的边角块），补完自动重新分组并推算邻居<br>"
-    +"<span class=\"sn\">「重新标定」= 自动重标（Shift/Alt + 点 = 手动点两块）；网格在全部编号读数里自动找最自洽的一对片对齐，换照片同样适用。相邻且编号方向一致的块自动归为拼好组；组内编号在网格上对不上时会标红提示。识别有误的编号可以直接在照片上核对；应用后可点「应用并引导摆放」逐块引导。</span>";
+    +"<span class=\"sn\">「重新标定」= 自动重标（Shift/Alt + 点 = 手动点两块）；网格在全部编号读数里自动找最自洽的一对片对齐，换照片同样适用。相邻且编号方向一致的块自动归为拼好组；组内编号在网格上对不上时会标红提示。识别有误的编号可以直接在照片上核对；「引导摆放」逐条引导，点「放好了」才落一条。</span>";
   return true;
 }
 
@@ -1926,7 +1956,7 @@ function updateScanStats(){
   var guideMode = set.size>0 && scan.ocr && scan.ocr.map.size>=2;
   $("bApplyGuide").style.display = guideMode ? "block" : "none";
   $("bApplyGuide").disabled = set.size===0;
-  // 「应用」始终在：「应用并引导摆放」是逐块走一遍的可选流程，不该把直接应用顶掉
+  // 「应用」始终在：「引导摆放」是逐条走一遍的可选流程，不该把直接应用顶掉
   $("bApplyScan").style.display="block";
   // 有可疑点 → 「应用」变成「下一步」：先逐块审查，审完才允许应用
   var bA=$("bApplyScan");
@@ -1985,18 +2015,29 @@ $("pickZoom").parentNode.addEventListener("click",function(e){
   drawPickZoom();
 });
 
-function openPick(p,clientX,clientY,add,cands,ren){
-  scan.picking={x:p.x,y:p.y,add:!!add,ren:(ren==null?null:ren)};
+function openPick(p,clientX,clientY,add,cands,ren,opt){
+  opt=opt||{};
+  scan.picking={x:p.x,y:p.y,add:!!add,ren:(ren==null?null:ren),
+                inferred:(opt.inferred==null?null:opt.inferred), weak:opt.weak||null};
   var pr=$("scanPick");
   pr.classList.add("on");
   var h4=pr.querySelector("h4");
   if(h4) h4.textContent = (ren!=null)
     ? ("这块现在记成 "+fmt(ren)+" · 改成正确的编号")
-    : (add ? "这块拼图上印的数字（补进结果）" : "这一块上印的数字");
+    : (scan.picking.inferred!=null)
+      ? ("这块是推算出来的（"+fmt(scan.picking.inferred)+"）· 没读到编号")
+      : (scan.picking.weak)
+        ? "这处有片、但编号认不准 · 输入编号或删掉这处提示"
+        : (add ? "这块拼图上印的数字（补进结果）" : "这一块上印的数字");
+  // 「删掉」适用范围：改已有结果 / 推算块 / 认不准提示（都能删）
   var pdl=$("pickDel");
-  if(pdl){                                   // 只有「改已有结果」时才给删除
-    pdl.style.display = (ren!=null) ? "inline-block" : "none";
-  }
+  if(pdl) pdl.style.display =
+    (ren!=null || scan.picking.inferred!=null || scan.picking.weak) ? "inline-block" : "none";
+  // 推算块没有原文可改：输入框/结果提示/确定都收起来，只留「删掉」
+  var onlyDel = scan.picking.inferred!=null;
+  ["pickNum","pickRes","pickOk"].forEach(function(id){
+    var el=$(id); if(el) el.style.display = onlyDel ? "none" : "";
+  });
   // 二义位：把候选编号直接摆出来点一下就行（几何上只可能是这几个之一）
   var cd=$("pickCands");
   if(cd){
@@ -2031,7 +2072,7 @@ function openPick(p,clientX,clientY,add,cands,ren){
   $("pickNum").value = (ren!=null) ? String(ren) : "";
   updatePickRes();
   drawPickZoom();
-  setTimeout(function(){ try{ $("pickNum").focus(); }catch(err){} },60);
+  if(!onlyDel) setTimeout(function(){ try{ $("pickNum").focus(); }catch(err){} },60);
 }
 
 function startScanPinch(){
@@ -2098,8 +2139,13 @@ scanStage.addEventListener("pointermove",function(e){
   if(scan.calibrated && scan.mode==="grid"){
     var r=scanCanvas.getBoundingClientRect(), k2=scan.W/r.width;
     scan.ax=scanDrag.ax+dx*k2; scan.ay=scanDrag.ay+dy*k2;
-    recalcScan(); drawScan();
-  } else if(scan.calibrated && scan.mode==="edit"){
+    /* 拖动过程中只重画、不 recalc：整块模式的重算会把 blockMode 判掉（框弹回原位），
+       而且每帧跑一遍前景蔓延很卡。松手在 endScanPointer 里补一次完整重算。 */
+    scan.gridAdj=true;
+    drawScan();
+    return;
+  }
+  if(scan.calibrated && scan.mode==="edit"){
     var p=scanImgXY(e.clientX,e.clientY);
     if(p.x<0||p.y<0||p.x>scan.W||p.y>scan.H) return;
     if(scanDrag.cell!=null){ scanToggleCell(scanDrag.cell,scanDrag.del); scanDrag.cell=null; }
@@ -2115,16 +2161,29 @@ function endScanPointer(e){
   if(scanPinch){ if(scanPtr.size<2) scanPinch=null; scanDrag=null; return; }
   if(!scanDrag||scanDrag.id!==e.pointerId) return;
   var d=scanDrag; scanDrag=null;
-  if(d.moved) return;                       // 拖过 = 平移照片，不当作选点
+  if(d.moved){
+    // 微调网格拖动结束：补一次完整重算（拖动过程中只重画，见 pointermove）
+    if(scan.calibrated && scan.mode==="grid"){ recalcScan(); drawScan(); updateScanStats(); }
+    return;                       // 拖过 = 平移照片/挪网格，不当作选点
+  }
   if(!scan.calibrated){
     if(scan.anchors.length>=2){ toast("已标定两块，点「重新标定」可重来"); return; }
     if(d.inside) openPick(d.pt,e.clientX,e.clientY);   // 只有点在照片范围内才选锚点
   } else if(d.cell!=null && scan.mode==="edit"){
-    // 单击已有结果：改这块的编号（改完自动判定它属于哪一组）
-    var pt0=photoPosOf(d.cell)||{x:0,y:0};
+    /* 单击已有结果：改这块的编号（改完自动判定它属于哪一组）。
+       注意坐标系：photoPosOf 给的是 **OCR 工作坐标**（≈3072 宽），
+       浮层放大镜吃的是 **scan 工作坐标**（scan.W），必须乘 k 换算，
+       否则采样点偏到画面外 → 预览是一片黑。 */
+    var kk=(scan.ocr&&scan.ocr.w)?(scan.W/scan.ocr.w):1;
+    var pos=photoPosOf(d.cell);
+    var pt0=pos?{x:pos.x*kk, y:pos.y*kk}:{x:d.pt.x, y:d.pt.y};
     if(scan.ocr && scan.ocr.map.has(d.cell)) openPick(pt0,e.clientX,e.clientY,false,null,d.cell);
+    else if(scan.inferredPos && scan.inferredPos[d.cell])
+      openPick(pt0,e.clientX,e.clientY,false,null,null,{inferred:d.cell});   // 推算块：只能删
   } else if(d.addPt && scan.mode==="edit"){
-    openPick(d.addPt,e.clientX,e.clientY,true, d.weak?d.weak.cands:null);  // 增删模式点空白片 → 补编号
+    // 增删模式点空白片 → 补编号（命中二义位/漏读位时带候选与「删掉这处提示」）
+    openPick(d.addPt,e.clientX,e.clientY,true, d.weak?d.weak.cands:null,null,
+      d.weak?{weak:d.weak}:null);
   }
 }
 scanStage.addEventListener("pointerup",endScanPointer);
@@ -2146,7 +2205,10 @@ function setScanMode(m){
     if(!scan.calibrated){ toast("先标定两块，再手动增删"); setScanMode("move"); return; }
     $("scanTip").textContent="增删模式：点已有的块 = 改这块的编号 · 点空白片 = 补一块 · 按住拖动 = 连续增删";
   } else if(m==="grid"){
-    $("scanTip").textContent="微调模式：拖动照片来平移网格，或用下方方向键";
+    var ocrM = scan.ocr && scan.ocr.map.size>=2;
+    $("scanTip").textContent = (!ocrM || scan.blockMode)
+      ? "微调模式：拖动平移网格（结果框跟着格子走），或用下方方向键"
+      : "微调模式：拖动平移网格 · 散块照片上结果框贴在读数处，网格只影响推算/增删";
   } else {
     $("scanTip").textContent="移动模式：拖动平移、滚轮缩放照片；点块可选为标定锚点";
   }
@@ -2176,10 +2238,12 @@ $("scanNudge").addEventListener("click",function(e){
   if(n==="minus"){ scan.pitchX*=0.988; scan.pitchY*=0.988; }
   if(n==="rot"){
     // 切换拼放方向解释：按锚点重新求解（网格参数重算，微调失效）
+    scan.gridAdj=false;
     if(solveScan(!scan.rot)) scanCalTip();
     drawScan();
     return;
   }
+  scan.gridAdj=true;            // 人工微调过：整块模式不再被自动裁决推翻（见 recalcScan）
   recalcScan(); drawScan();
 });
 
@@ -2187,15 +2251,36 @@ $("pickCancel").addEventListener("click",function(){
   scan.picking=null; $("scanPick").classList.remove("on");
 });
 $("pickDel").addEventListener("click",function(){
-  if(!scan.picking || scan.picking.ren==null) return;
-  var old=scan.picking.ren;
+  var P=scan.picking; if(!P) return;
+  if(P.ren==null && P.inferred==null && !P.weak) return;
   scan.picking=null; $("scanPick").classList.remove("on");
-  dropReading(old,true);
-  if(scan.ocr&&scan.ocr.map) scan.ocr.map.delete(old);
-  if(scan.result) scan.result.delete(old);
-  recalcScan(); drawScan(); updateScanStats();
-  if(scan.calibrated) scanCalTip();
-  toast("已删掉 "+fmt(old)+"（点空白片可以重新补回来）");
+  // ① 已有读数（含复核漏读/补漏/人工补进来的）：编号进黑名单，读数与结果一起删
+  if(P.ren!=null){
+    var old=P.ren;
+    dropReading(old,true);
+    if(scan.ocr&&scan.ocr.map) scan.ocr.map.delete(old);
+    if(scan.result) scan.result.delete(old);
+    recalcScan(); drawScan(); updateScanStats();
+    if(scan.calibrated) scanCalTip();
+    toast("已删掉 "+fmt(old)+"（点空白片可以重新补回来）");
+    return;
+  }
+  // ② 推算块（整块模式按前景蔓延推出来的，OCR 没读到）：只进黑名单，不再推算它
+  if(P.inferred!=null){
+    if(!scan.inferDrop) scan.inferDrop=new Set();
+    scan.inferDrop.add(P.inferred);
+    if(scan.result) scan.result.delete(P.inferred);
+    recalcScan(); drawScan(); updateScanStats();
+    toast("已删掉推算块 "+fmt(P.inferred)+"（不会再推算它）");
+    return;
+  }
+  // ③ 二义位/漏读位的黄色「?」提示：忽略这个位置，不再弹提示
+  if(P.weak){
+    if(!scan.weakDrop) scan.weakDrop=[];
+    scan.weakDrop.push({x:P.weak.x, y:P.weak.y});
+    recalcScan(); drawScan(); updateScanStats();
+    toast("已忽略这处「认不准」提示");
+  }
 });
 $("pickOk").addEventListener("click",function(){
   if(!scan.picking) return;
@@ -2262,10 +2347,12 @@ function applyScanCore(){
   if(applied){
     var mainSet=new Set(mainComp(base));
     orig.forEach(function(v,i){
-      if(S.states[i]===1 && !mainSet.has(i)){ S.states[i]=3; demoted++; }
+      if(S.states[i]===1 && !mainSet.has(i)){ S.states[i]=3; }
     });
     // 已有的待定块如果这次连上了主片，转完成
     promoteConnected().forEach(function(c){ if(!orig.has(c[0])) orig.set(c[0],c[1]); });
+    /* 待定数在 promoteConnected 之后数（先数会把已经被转回完成的也报进去） */
+    orig.forEach(function(v,i){ if(S.states[i]===3) demoted++; });
   }
   orig.forEach(function(v,k){ paint(k); markChange(k); });
   pushUndo(Array.from(orig.entries()));
@@ -2297,11 +2384,15 @@ $("bApplyScan").addEventListener("click",function(){
 });
 
 $("bApplyGuide").addEventListener("click",function(){
-  var r=applyScanCore();
-  if(r && r.targets.length){
-    if(S.batchMode) exitBatch();     // 引导与批量互斥
-    startGuide(r.targets);
-  }
+  /* 「引导摆放」：**不**先把结果全铺到棋盘——那样一进引导就已经全绿了。
+     这里只把「还没拼上」的块排成队列，用户在引导里点「放好了」才一条条落库。 */
+  if(!scan.result||!scan.result.size){ toast("还没有识别结果"); return; }
+  var targets=[];
+  scan.result.forEach(function(i){ if(S.states[i]!==1) targets.push(i); });
+  if(!targets.length) targets=Array.from(scan.result);
+  $("ovScan").classList.remove("on");        // 先回棋盘，引导在棋盘上看
+  if(S.batchMode) exitBatch();               // 引导与批量互斥
+  startGuide(targets);
 });
 /* Esc 关闭放大选点面板（main.js 键盘处理用） */
 export function cancelPick(){
