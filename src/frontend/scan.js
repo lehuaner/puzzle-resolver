@@ -290,6 +290,17 @@ function scanZoomAt(cx,cy,nz){
 function scanResetView(){
   scan.zoom=1; scan.ox=0; scan.oy=0; layoutScanView();
 }
+/* 把照片上某个点（scan 坐标）摆到画面正中并放大——审核列表点条目时用 */
+function scanFocusOn(x,y,nz){
+  var stage=$("scanStage"); if(!stage) return;
+  var fit=scan.fit||scanFitScale();
+  scan.zoom=Math.max(0.3,Math.min(14,nz||3.2));
+  var cw=scan.W*fit*scan.zoom, ch=scan.H*fit*scan.zoom;
+  var bx=(stage.clientWidth-cw)/2, by=(stage.clientHeight-ch)/2;
+  scan.ox=stage.clientWidth/2 - x*fit*scan.zoom - bx;
+  scan.oy=stage.clientHeight/2 - y*fit*scan.zoom - by;
+  layoutScanView();
+}
 
 export function drawScan(){
   if(!scan.img||!scan.W||!scan.H) return;
@@ -778,6 +789,9 @@ function recalcScan(){
       var sd0=readingSide(r)||0; if(!sd0) return;
       weakCells.push({x:r.x,y:r.y,side:sd0,cands:[r.idx],src:"low",conf:r.conf});
     });
+    if(scan.suspAck && scan.suspAck.size){            // 人工点过「无误」的不再标红
+      suspIdx.forEach(function(i){ if(scan.suspAck.has(i)) suspIdx.delete(i); });
+    }
     reads.forEach(function(r){
       if(grpMap[r.idx]!=null) return;                  // 组内的交给组处理
       var sd=readingSide(r); if(!sd||sd<8) return;
@@ -1022,6 +1036,7 @@ function resetScan(keepImg,keepOcr){
   scan.alignedIdx=null; scan.blockAng=0;
   scan.reads=null; scan.groups=null; scan.grpMap=null;
   scan.suspIdx=null; scan.suspPairs=null;
+  scan.suspAck=new Set();                       // 人工点过「无误」的可疑块
   scan.inferred=0; scan.inferredIdx=null; scan.inferredPos=null; scan.inferredWeak=0; scan.weakCells=null;
   scan.zoom=1; scan.ox=0; scan.oy=0;
   setScanMode("move");
@@ -1375,8 +1390,18 @@ function updateScanStats(){
     parts.push("<span style=\"color:"+(GRP_TXT[gi%GRP_TXT.length])+"\">组"+(gi+1)+": "+m.join(",")+"</span>");
   });
   if(nS){
-    var sp=scan.suspPairs||[];
-    parts.push("<span style=\"color:#ff8080\">⚠可疑对: "+(sp.length?sp.join("、")+"…":"见红框")+"</span>");
+    // 可疑块逐条列出来：点编号定位放大、✓ 确认无误、✕ 删掉——不必在照片上挨个找
+    var chips=[], sp=scan.suspPairs||[];
+    scan.suspIdx.forEach(function(i){
+      chips.push('<span style="display:inline-flex;align-items:center;gap:4px;margin:3px 5px 0 0;'
+        +'padding:1px 6px;border-radius:6px;background:rgba(255,90,90,.15);color:#ff9a9a">'
+        +'<span data-focus="'+i+'" style="cursor:pointer;font-variant-numeric:tabular-nums">'+fmt(i)+'</span>'
+        +'<b data-ack="'+i+'" title="这块没问题，别再标红" style="cursor:pointer;color:#6cffb0">✓</b>'
+        +'<b data-del="'+i+'" title="这块不该算（误读/错位），删掉" style="cursor:pointer;color:#ff8080">✕</b></span>');
+    });
+    parts.push('<span style="color:#ff8080">⚠可疑 '+nS+'（点编号跳过去 · ✓无误 · ✕删掉）'
+      +(sp.length?('　'+sp.join("、")+"…"):'')+'</span>');
+    parts.push(chips.join(""));
   }
   det.style.display=parts.length?"block":"none";
   det.innerHTML=parts.join("<br>");
@@ -1385,9 +1410,31 @@ function updateScanStats(){
   var guideMode = set.size>0 && scan.ocr && scan.ocr.map.size>=2;
   $("bApplyGuide").style.display = guideMode ? "block" : "none";
   $("bApplyGuide").disabled = set.size===0;
-  if(guideMode) $("bApplyScan").style.display="none";
-  else $("bApplyScan").style.display="block";
+  // 「应用」始终在：「应用并引导摆放」是逐块走一遍的可选流程，不该把直接应用顶掉
+  $("bApplyScan").style.display="block";
 }
+/* 可疑块审核：点编号跳过去 / ✓ 无误 / ✕ 删掉（一次把 5 个过完，不用在照片上找） */
+$("scanGrpDetail").addEventListener("click",function(e){
+  var t=e.target.closest?e.target.closest("[data-ack],[data-del],[data-focus]"):null;
+  if(!t||!scan.calibrated) return;
+  var ackV=t.getAttribute("data-ack"), delV=t.getAttribute("data-del"), focV=t.getAttribute("data-focus");
+  if(ackV!=null){
+    scan.suspAck.add(+ackV); recalcScan(); drawScan();
+    toast("第 "+ackV+" 块：已确认无误");
+  } else if(delV!=null){
+    var i=+delV;
+    scan.suspAck.add(i);                             // 删掉之后也别再标红
+    if(scan.ocr&&scan.ocr.map) scan.ocr.map.delete(i);
+    if(scan.result) scan.result.delete(i);
+    recalcScan(); drawScan();
+    toast("第 "+i+" 块：已删除");
+  } else if(focV!=null){
+    var i2=+focV, kk=scan.W/scan.ocr.w, p=null;
+    if(scan.ocr&&scan.ocr.map.has(i2)){ var r2=scan.ocr.map.get(i2); p={x:r2.x*kk,y:r2.y*kk}; }
+    else if(scan.inferredPos&&scan.inferredPos[i2]){ p={x:scan.inferredPos[i2].x*kk,y:scan.inferredPos[i2].y*kk}; }
+    if(p){ scanFocusOn(p.x,p.y,3.4); drawScan(); }
+  }
+});
 
 // 放大镜：把选中点附近的原始像素放大显示，方便读印在块上的数字
 function drawPickZoom(){
@@ -1673,6 +1720,7 @@ function applyScanCore(){
   }
   var msg="已应用 · "+applied+" 块";
   if(demoted) msg+="，其中 "+demoted+" 块待定";
+  if(scan.weakCells&&scan.weakCells.length) msg+="（还有 "+scan.weakCells.length+" 处待选没算进去）";
   toast(msg);
   vibrate(30);
   return { targets:targets, applied:applied, demoted:demoted };
