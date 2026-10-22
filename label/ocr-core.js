@@ -385,7 +385,7 @@ function recognize(cand, candIdx, gray, W, label, base, dyn) {
   var conf = Math.max(0, Math.min(1, 1 - avgPerCell / 15 * 4));   // 经验缩放
   return {
     x: cand.x, y: cand.y, letter: letter, digits: digits, idx: idx,
-    conf: conf, dir: bestR.name, n: n, glyphs: glyphs,
+    conf: conf, dir: bestR.name, n: n, glyphs: glyphs, ang: cand.ang,
     comps: cand.comps.map(function (c) { return { x0: c.x0, y0: c.y0, w: c.w, h: c.h }; })
   };
 }

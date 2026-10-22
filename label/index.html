@@ -51,6 +51,7 @@ input:focus{border-color:#3d6ea5;}
        border-top:1px solid var(--line); flex-wrap:wrap;}
 #edbar.on{display:flex;}
 #edLabel{width:130px; font-family:ui-monospace,Consolas,monospace; letter-spacing:1px; font-size:15px;}
+#edDeg{width:78px; font-family:ui-monospace,Consolas,monospace;}
 #edInfo{color:var(--dim); font-size:12px;}
 /* ---- 历史面板 ---- */
 #hist{display:none; position:fixed; right:12px; top:52px; width:300px; max-height:70vh; overflow:auto;
@@ -78,6 +79,7 @@ input:focus{border-color:#3d6ea5;}
   <button id="bOpen">📁 打开照片</button>
   <button id="bAuto">⚡ 自动标注</button>
   <button id="bExport" class="pri">⬇ 导出 JSON</button>
+  <button id="bImport">⬆ 导入</button>
   <button id="bHist">🕘 历史</button>
   <span class="name" id="phName">未打开照片</span>
   <span id="stat"></span>
@@ -91,13 +93,14 @@ input:focus{border-color:#3d6ea5;}
   <div id="side">
     <div class="hd"><span>块列表</span><span id="pCount">0</span></div>
     <div id="plist"></div>
-    <div id="hint">拖拽＝画新框<br>点框＝选中编辑（拖框可移动）<br>空编号的块标红，务必补齐</div>
+    <div id="hint">拖拽＝画新框（AABB）<br>选中后：拖框移动 · 拖顶部圆点<b>旋转</b> · 拖右下角方块缩放<br>编号排列方向已自动对齐块边，一般微调即可</div>
   </div>
 </div>
 
 <div id="edbar">
   <span id="edInfo">块 #1</span>
   <input id="edLabel" placeholder="如 B-287" autocomplete="off">
+  <input id="edDeg" title="旋转角度（度）" autocomplete="off">
   <button id="bOk" class="pri">✓ 确认</button>
   <button id="bDel" style="color:#ffb0b0">🗑 删除框</button>
   <span style="flex:1"></span>
@@ -112,6 +115,7 @@ input:focus{border-color:#3d6ea5;}
 <div id="toast"></div>
 <input type="file" id="fImg" accept="image/*" style="display:none">
 <input type="file" id="fApply" accept="image/*" style="display:none">
+<input type="file" id="fJson" accept="application/json,.json" style="display:none">
 
 <script src="ocr-templates.js"></script>
 <script src="ocr-core.js"></script>
@@ -220,6 +224,13 @@ function pieceBoxes(){
 }
 
 /* ================= 自动标注 ================= */
+// 旋转框角度归一：正方形块对 90° 对称，主轴角折到 [-45°,45°]
+function norm90(a){
+  var d=a*180/Math.PI;
+  d=((d%90)+90)%90;
+  if(d>45) d-=90;
+  return d*Math.PI/180;
+}
 function autoLabel(){
   if(!P.img){ toast("先打开照片"); return; }
   toast("正在自动标注…",true);
@@ -248,28 +259,36 @@ function autoLabel(){
       smalls.forEach(function(bx){ avgSide+=Math.sqrt(bx.cnt); });
       avgSide/=smalls.length;
     } else avgSide=P.W*0.1;
+    // 旋转框：{cx,cy,w,h,ang}（工作分辨率坐标）。编号排列主轴 ≈ 块边方向（印刷平行片边）
+    function mkRot(cx,cy,w,h,ang){ return {cx:cx,cy:cy,w:w,h:h,ang:ang||0}; }
     var fresh=[];
-    function mkPiece(bbox,r){
-      return { id:P.nextId++, bbox:bbox, label:r?r.letter+"-"+r.digits:"",
+    function mkPiece(box,r){
+      return { id:P.nextId++, box:box, label:r?r.letter+"-"+r.digits:"",
                conf:r?r.conf:0, src:"auto" };
     }
     boxes.forEach(function(bx,b){
       if(keepBoxesOverlap(bx.bbox)) return;      // 与人工框重叠的自动域跳过
       var rs=byBox[b];
       if(rs.length>=2){
-        // 域含多个编号（块相邻粘连/堆叠）：按编号位置+均摊块面积拆方框
+        // 域含多个编号（块相邻粘连/堆叠）：按编号位置+均摊块面积拆旋转方框
         var s=Math.sqrt(bx.cnt/rs.length);
         rs.forEach(function(r){
-          fresh.push(mkPiece([r.x*ocrK-s/2, r.y*ocrK-s/2, s, s], r));
+          fresh.push(mkPiece(mkRot(r.x*ocrK, r.y*ocrK, s, s, norm90(r.ang)), r));
         });
+      } else if(rs.length===1){
+        // 单编号域：域中心+域均摊面积，方向取编号排列轴
+        var bb=bx.bbox, s=Math.sqrt(bx.cnt);
+        fresh.push(mkPiece(mkRot(bb[0]+bb[2]/2, bb[1]+bb[3]/2, s, s, norm90(rs[0].ang)), rs[0]));
       } else {
-        fresh.push(mkPiece(bx.bbox.slice(), rs[0]||null));
+        // 无编号域：AABB 兜底，方向 0 待人工转
+        var bb2=bx.bbox;
+        fresh.push(mkPiece(mkRot(bb2[0]+bb2[2]/2, bb2[1]+bb2[3]/2, bb2[2], bb2[3], 0), null));
       }
     });
-    // 未落框的编号：按平均块面积给估算框，供人工校准
+    // 未落框的编号：按平均块面积给估算旋转框，供人工校准
     orphans.forEach(function(r){
       var s=avgSide;
-      fresh.push(mkPiece([r.x*ocrK-s/2, r.y*ocrK-s/2, s, s], r));
+      fresh.push(mkPiece(mkRot(r.x*ocrK, r.y*ocrK, s, s, norm90(r.ang)), r));
     });
     // 已有人工确认的块保留不动
     var keep=P.pieces.filter(function(p){ return p.src==="manual"; });
@@ -282,8 +301,9 @@ function autoLabel(){
 function keepBoxesOverlap(bb){
   return P.pieces.some(function(p){
     if(p.src!=="manual") return false;
-    var kb=p.bbox;
-    return !(bb[0]>kb[0]+kb[2]||bb[0]+bb[2]<kb[0]||bb[1]>kb[1]+kb[3]||bb[1]+bb[3]<kb[1]);
+    var kb=p.box;
+    var m=Math.max(kb.w,kb.h)/2*Math.SQRT2;   // 旋转外接包络
+    return !(bb[0]>kb.cx+m||bb[0]+bb[2]<kb.cx-m||bb[1]>kb.cy+m||bb[1]+bb[3]<kb.cy-m);
   });
 }
 $("bAuto").addEventListener("click",autoLabel);
@@ -354,28 +374,60 @@ function renderAll(){
   updateSide(); updateStat();
 }
 function drawPiece(p,i,sel){
-  var b=p.bbox, col=boxColor(p,sel);
+  var b=p.box, col=boxColor(p,sel);
+  ctx.save();
+  ctx.translate(b.cx,b.cy);
+  ctx.rotate(b.ang);
   ctx.strokeStyle=col;
   ctx.lineWidth=sel?Math.max(3,P.W/400):Math.max(1.6,P.W/800);
   if(sel){ ctx.shadowColor="rgba(255,212,94,.8)"; ctx.shadowBlur=10; }
-  ctx.strokeRect(b[0],b[1],b[2],b[3]);
+  ctx.strokeRect(-b.w/2,-b.h/2,b.w,b.h);
   ctx.shadowBlur=0;
-  // 标签：左上角 序号 + 编号
+  // 方向指示：从中心指向「编号起始端」的短线（w 轴正方向）
+  if(sel){
+    ctx.beginPath();
+    ctx.moveTo(0,0); ctx.lineTo(b.w/2,0);
+    ctx.strokeStyle=col; ctx.lineWidth=Math.max(2,P.W/600);
+    ctx.setLineDash([6,5]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
+  // 标签：旋转框最高点上方（水平书写，易读）
+  var hw=Math.abs(b.w*Math.cos(b.ang))+Math.abs(b.h*Math.sin(b.ang));
+  var hh=Math.abs(b.w*Math.sin(b.ang))+Math.abs(b.h*Math.cos(b.ang));
+  var topY=b.cy-hh/2;
   var txt="#"+(i+1)+"  "+(p.label||"? ? ?");
   var fs=Math.max(13,Math.min(26,P.W/60));
   ctx.font="bold "+fs+"px ui-monospace,Consolas,monospace";
   var tw=ctx.measureText(txt).width;
-  var ly=Math.max(fs+4,b[1]-6);
+  var ly=Math.max(fs+4,topY-6);
   ctx.fillStyle="rgba(6,10,16,.78)";
-  ctx.fillRect(b[0]-1,ly-fs-4,tw+14,fs+8);
+  ctx.fillRect(b.cx-tw/2-7,ly-fs-4,tw+14,fs+8);
   ctx.fillStyle=col;
   ctx.textBaseline="alphabetic"; ctx.textAlign="left";
-  ctx.fillText(txt,b[0]+6,ly-2);
+  ctx.fillText(txt,b.cx-tw/2,ly-2);
+  if(sel){
+    // 旋转柄：顶中点向上伸出的圆点；缩放柄：右下角小方块（均在旋转坐标系里）
+    ctx.save();
+    ctx.translate(b.cx,b.cy); ctx.rotate(b.ang);
+    var hs=Math.max(9,P.W/110);
+    ctx.strokeStyle=col; ctx.lineWidth=Math.max(1.5,P.W/900);
+    ctx.beginPath();
+    ctx.moveTo(0,-b.h/2); ctx.lineTo(0,-b.h/2-hs*1.4);
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(0,-b.h/2-hs*1.4,hs*0.55,0,Math.PI*2);
+    ctx.fillStyle=col; ctx.fill();
+    ctx.fillStyle="#0b0f14";
+    ctx.fillRect(b.w/2-hs/2, b.h/2-hs/2, hs, hs);
+    ctx.strokeRect(b.w/2-hs/2, b.h/2-hs/2, hs, hs);
+    ctx.restore();
+  }
   // 人工确认小勾
   if(p.src==="manual"&&!sel){
     ctx.fillStyle="rgba(60,230,120,.95)";
     ctx.font="bold "+(fs*0.8)+"px system-ui";
-    ctx.fillText("✓",b[0]+b[2]-fs*1.2,b[1]+fs);
+    ctx.fillText("✓",b.cx+hw/2-fs*1.2,b.cy-hh/2+fs);
   }
 }
 function updateStat(){
@@ -407,8 +459,13 @@ function selectPiece(i){
   renderAll();
   if(P.sel>=0){
     $("edbar").classList.add("on");
-    $("edInfo").textContent="块 #"+(P.sel+1)+(P.pieces[P.sel].conf?" · 自动 conf "+(P.pieces[P.sel].conf*100|0)+"%":"");
-    $("edLabel").value=P.pieces[P.sel].label;
+    var p=P.pieces[P.sel];
+    var deg=Math.round(p.box.ang*180/Math.PI*10)/10;
+    $("edInfo").textContent="块 #"+(P.sel+1)
+      +(p.conf&&p.src!=="manual"?" · 自动 conf "+(p.conf*100|0)+"%":"")
+      +" · "+Math.round(p.box.w)+"×"+Math.round(p.box.h);
+    $("edLabel").value=p.label;
+    $("edDeg").value=deg+"°";
     setTimeout(function(){ $("edLabel").focus(); $("edLabel").select(); },40);
   } else $("edbar").classList.remove("on");
 }
@@ -434,6 +491,18 @@ $("bOk").addEventListener("click",function(){ commitLabel(true); });
 $("edLabel").addEventListener("keydown",function(e){
   if(e.key==="Enter") commitLabel(true);
 });
+$("edDeg").addEventListener("keydown",function(e){
+  if(e.key==="Enter"){
+    if(P.sel<0) return;
+    var v=parseFloat(String($("edDeg").value).replace(/[^0-9.\-]/g,""));
+    if(!isNaN(v)){
+      P.pieces[P.sel].box.ang=v*Math.PI/180;
+      P.pieces[P.sel].src="manual";
+      saveSoon(); renderAll();
+    }
+    $("edLabel").focus();
+  }
+});
 $("bDel").addEventListener("click",function(){
   if(P.sel<0) return;
   P.pieces.splice(P.sel,1);
@@ -442,18 +511,37 @@ $("bDel").addEventListener("click",function(){
 $("bPrev").addEventListener("click",function(){ if(P.pieces.length) selectPiece((P.sel-1+P.pieces.length)%P.pieces.length); });
 $("bNext").addEventListener("click",function(){ if(P.pieces.length) selectPiece((P.sel+1)%P.pieces.length); });
 
-/* ================= 指针交互：画框 / 移动框 / 平移 ================= */
+/* ================= 指针交互：画框 / 移动 / 旋转 / 缩放 / 平移 ================= */
 var drag=null;
 function toWork(e){
   var r=cv.getBoundingClientRect();
   return { x:(e.clientX-r.left)*P.W/r.width, y:(e.clientY-r.top)*P.H/r.height };
 }
+// 点是否在旋转框内（反旋转到局部坐标）
+function inRotBox(b,x,y){
+  var dx=x-b.cx, dy=y-b.cy;
+  var c=Math.cos(-b.ang), s=Math.sin(-b.ang);
+  var lx=dx*c-dy*s, ly=dx*s+dy*c;
+  return Math.abs(lx)<=b.w/2 && Math.abs(ly)<=b.h/2;
+}
 function hitPiece(x,y){
   for(var i=P.pieces.length-1;i>=0;i--){
-    var b=P.pieces[i].bbox;
-    if(x>=b[0]&&x<=b[0]+b[2]&&y>=b[1]&&y<=b[1]+b[3]) return i;
+    if(inRotBox(P.pieces[i].box,x,y)) return i;
   }
   return -1;
+}
+// 屏幕像素阈值 → 工作坐标
+function handleR(){ return Math.max(9,P.W/110)/(P.fit*P.zoom); }
+// 选中框的柄命中：0=无 1=旋转柄(顶中伸出) 2=缩放柄(右下角)
+function hitHandle(p,x,y){
+  var b=p.box, hr=handleR()*1.6;
+  var dx=x-b.cx, dy=y-b.cy;
+  var c=Math.cos(-b.ang), s=Math.sin(-b.ang);
+  var lx=dx*c-dy*s, ly=dx*s+dy*c;
+  var ry=-b.h/2-handleR()*1.4;
+  if(Math.hypot(lx-0,ly-ry)<hr) return 1;
+  if(Math.abs(lx-b.w/2)<hr && Math.abs(ly-b.h/2)<hr) return 2;
+  return 0;
 }
 cv.addEventListener("pointerdown",function(e){
   if(!P.img) return;
@@ -464,22 +552,42 @@ cv.addEventListener("pointerdown",function(e){
     drag={ kind:"pan", sx:e.clientX, sy:e.clientY, ox:P.ox, oy:P.oy };
     return;
   }
+  // 选中块的柄优先（旋转/缩放）
+  if(P.sel>=0&&P.pieces[P.sel]){
+    var h=hitHandle(P.pieces[P.sel],w.x,w.y);
+    if(h===1){ drag={ kind:"rot", id:P.pieces[P.sel].id }; return; }
+    if(h===2){ drag={ kind:"scale", id:P.pieces[P.sel].id, w0:P.pieces[P.sel].box.w, d0:Math.hypot(w.x-P.pieces[P.sel].box.cx, w.y-P.pieces[P.sel].box.cy) }; return; }
+  }
   var hit=hitPiece(w.x,w.y);
-  if(hit>=0&&hit!==P.sel){ selectPiece(hit); drag={ kind:"move", id:P.pieces[hit].id, sx:w.x, sy:w.y, bb:P.pieces[hit].bbox.slice(), moved:false }; return; }
-  if(hit>=0&&hit===P.sel){ drag={ kind:"move", id:P.pieces[hit].id, sx:w.x, sy:w.y, bb:P.pieces[hit].bbox.slice(), moved:false }; return; }
+  if(hit>=0&&hit!==P.sel){ selectPiece(hit); drag={ kind:"move", id:P.pieces[hit].id, sx:w.x, sy:w.y, bb:cloneBox(P.pieces[hit].box), moved:false }; return; }
+  if(hit>=0&&hit===P.sel){ drag={ kind:"move", id:P.pieces[hit].id, sx:w.x, sy:w.y, bb:cloneBox(P.pieces[hit].box), moved:false }; return; }
   drag={ kind:"draw", x0:w.x, y0:w.y, x1:w.x, y1:w.y, drawing:false };
 });
+function cloneBox(b){ return {cx:b.cx,cy:b.cy,w:b.w,h:b.h,ang:b.ang}; }
 cv.addEventListener("pointermove",function(e){
   if(!drag) return;
   if(drag.kind==="pan"){
     P.ox=drag.ox+(e.clientX-drag.sx); P.oy=drag.oy+(e.clientY-drag.sy); layout(); return;
   }
   var w=toWork(e);
+  var p=P.pieces.find(function(q){ return q.id===drag.id; });
   if(drag.kind==="move"){
-    var p=P.pieces.find(function(q){ return q.id===drag.id; }); if(!p) return;
+    if(!p) return;
     var dx=w.x-drag.sx, dy=w.y-drag.sy;
     if(Math.abs(dx)>3||Math.abs(dy)>3) drag.moved=true;
-    p.bbox=[drag.bb[0]+dx,drag.bb[1]+dy,drag.bb[2],drag.bb[3]];
+    p.box.cx=drag.bb.cx+dx; p.box.cy=drag.bb.cy+dy;
+    p.src="manual";
+    renderAll();
+  } else if(drag.kind==="rot"){
+    if(!p) return;
+    p.box.ang=Math.atan2(w.y-p.box.cy, w.x-p.box.cx)+Math.PI/2;
+    p.src="manual";
+    renderAll();
+  } else if(drag.kind==="scale"){
+    if(!p) return;
+    var d1=Math.hypot(w.x-p.box.cx, w.y-p.box.cy);
+    var k=drag.d0>4?d1/drag.d0:1;
+    p.box.w=Math.max(20,drag.w0*k); p.box.h=p.box.w;   // 块近方形：等比
     p.src="manual";
     renderAll();
   } else {
@@ -494,11 +602,12 @@ function endDrag(e){
   if(d.kind==="draw"&&d.drawing){
     var b=[Math.min(d.x0,d.x1),Math.min(d.y0,d.y1),Math.abs(d.x1-d.x0),Math.abs(d.y1-d.y0)];
     if(b[2]>P.W*0.03&&b[3]>P.H*0.03){
-      P.pieces.push({ id:P.nextId++, bbox:b, label:"", conf:0, src:"manual" });
+      P.pieces.push({ id:P.nextId++, box:{cx:b[0]+b[2]/2, cy:b[1]+b[3]/2, w:b[2], h:b[3], ang:0},
+                      label:"", conf:0, src:"manual" });
       saveSoon(); renderAll();
       selectPiece(P.pieces.length-1);
     }
-  } else if(d.kind==="move"&&d.moved){
+  } else if((d.kind==="move"&&d.moved)||d.kind==="rot"||d.kind==="scale"){
     saveSoon(); renderAll();
   }
 }
@@ -507,27 +616,38 @@ cv.addEventListener("pointercancel",function(){ drag=null; });
 
 /* ================= 历史（localStorage） ================= */
 var LS="plabel:";
-function origBBox(b){                     // 工作分辨率 → 原图像素
+function origBox(b){                      // 工作分辨率 → 原图像素
   var k=P.ow/P.W;
-  return [Math.round(b[0]*k),Math.round(b[1]*k),Math.round(b[2]*k),Math.round(b[3]*k)];
+  return { cx:Math.round(b.cx*k), cy:Math.round(b.cy*k),
+           w:Math.round(b.w*k), h:Math.round(b.h*k), ang:Math.round(b.ang*1000)/1000 };
 }
-function workBBox(b){                     // 原图像素 → 工作分辨率
+function workBox(b){                      // 原图像素 → 工作分辨率
   var k=P.W/P.ow;
-  return [Math.round(b[0]*k),Math.round(b[1]*k),Math.round(b[2]*k),Math.round(b[3]*k)];
+  return { cx:b.cx*k, cy:b.cy*k, w:b.w*k, h:b.h*k, ang:b.ang||0 };
 }
 function dataNow(){
-  return { photo:P.name, width:P.ow, height:P.oh, updated:Date.now(),
+  return { version:2, photo:P.name, width:P.ow, height:P.oh, updated:Date.now(),
     pieces:P.pieces.map(function(p){
-      return { bbox:origBBox(p.bbox), label:p.label, conf:Math.round(p.conf*100)/100, src:p.src };
+      return { box:origBox(p.box), label:p.label, conf:Math.round(p.conf*100)/100, src:p.src };
     }) };
 }
 function applyData(d){
   P.ow=d.width||P.ow; P.oh=d.height||P.oh;
   P.pieces=(d.pieces||[]).map(function(p){
-    return { id:P.nextId++, bbox:workBBox(p.bbox), label:p.label||"",
+    var wb;
+    if(p.box) wb=workBox(p.box);
+    else {                                // v1 旧格式 AABB 兼容
+      var b=workBBoxArr(p.bbox);
+      wb={ cx:b[0]+b[2]/2, cy:b[1]+b[3]/2, w:b[2], h:b[3], ang:0 };
+    }
+    return { id:P.nextId++, box:wb, label:p.label||"",
              conf:p.conf||0, src:p.src||"auto" };
   });
   P.sel=-1; $("edbar").classList.remove("on");
+}
+function workBBoxArr(b){
+  var k=P.W/P.ow;
+  return [b[0]*k, b[1]*k, b[2]*k, b[3]*k];
 }
 var saveT=null;
 function saveSoon(){
@@ -630,6 +750,28 @@ $("bExport").addEventListener("click",function(){
   a.click();
   setTimeout(function(){ URL.revokeObjectURL(a.href); },3000);
   toast("已导出 "+n+" 张照片的标注");
+});
+
+/* ================= 导入 ================= */
+$("bImport").addEventListener("click",function(){ $("fJson").click(); });
+$("fJson").addEventListener("change",function(e){
+  var f=e.target.files&&e.target.files[0]; e.target.value="";
+  if(!f) return;
+  var fr=new FileReader();
+  fr.onload=function(){
+    var d;
+    try{ d=JSON.parse(fr.result); }catch(err){ toast("JSON 解析失败"); return; }
+    var ph=d.photos||{};
+    if(!d.photos&&d.pieces&&d.photo) ph[d.photo]=d;   // 单照片格式也收
+    var names=Object.keys(ph);
+    if(!names.length){ toast("文件里没有标注数据"); return; }
+    names.forEach(function(nm){
+      localStorage.setItem(LS+nm, JSON.stringify(ph[nm]));
+    });
+    toast("已导入 "+names.length+" 张照片的标注"+(P.name&&ph[P.name]?"，当前照片已更新":""));
+    if(P.name&&ph[P.name]){ applyData(ph[P.name]); renderAll(); }
+  };
+  fr.readAsText(f);
 });
 
 /* ================= 启动 ================= */
