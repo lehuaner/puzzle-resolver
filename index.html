@@ -213,7 +213,7 @@
             2. 点照片里<b>任意两块拼图中心</b>并输入编号（点中会放大显示，方便看清数字）<br>
             3. 系统自动识别所有已拼的块<br>
             4. 有偏差就用顶部工具条：<b>移动照片</b>缩放看细节 · <b>微调网格</b>整体挪 · <b>增删结果</b>逐格改<br>
-            <span class="sn">两块要在不同行不同列、相距越远越准；只把识别到的块标为已拼，不会动其它块。</span>
+            <span class="sn">两块要在不同行不同列、相距越远越准；拼放方向与编号差 90° 也能自动适配，网格不对点「⟳ 转向」；只把识别到的块标为已拼，不会动其它块。</span>
           </div>
         </div>
         <div class="scan-nudge" id="scanNudge">
@@ -223,6 +223,7 @@
           <button data-n="right">→</button>
           <button data-n="minus">缩小网格</button>
           <button data-n="plus">放大网格</button>
+          <button data-n="rot" title="照片里的拼放方向与编号相差 90° 时，切换网格轴向">⟳ 转向</button>
         </div>
         <div style="flex:1"></div>
         <button class="btn ok" id="bApplyScan" disabled>应用识别结果</button>

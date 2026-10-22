@@ -14,6 +14,7 @@ var scan={
   result:null,         // Set of idx
   cellsChecked:0,
   calibrated:false,
+  rot:false,           // 拼放方向相对编号框架旋转了 90°：照片 x 由行驱动、y 由列驱动
   picking:null,
   zoom:1, ox:0, oy:0, fit:1,   // 照片视图：缩放倍数（1=适应窗口）与平移偏移
   mode:"move"          // move 移动照片 / grid 微调网格 / edit 增删结果
@@ -183,14 +184,29 @@ export function drawScan(){
   });
 }
 
+// 行列 → 照片坐标。rot 时拼放方向旋转了 90°：照片 x 由行驱动、y 由列驱动
+function scanCellXY(p){
+  if(scan.rot) return { x:scan.ax+(p.row-scan.ar)*scan.pitchX,
+                        y:scan.ay+(p.col-scan.ac)*scan.pitchY };
+  return { x:scan.ax+(p.col-scan.ac)*scan.pitchX,
+           y:scan.ay+(p.row-scan.ar)*scan.pitchY };
+}
+// 照片坐标 → 最近行列（增删模式点选格子用）
+function scanXYCell(x,y){
+  if(scan.rot) return { row:Math.round((x-scan.ax)/scan.pitchX)+scan.ar,
+                        col:Math.round((y-scan.ay)/scan.pitchY)+scan.ac };
+  return { col:Math.round((x-scan.ax)/scan.pitchX)+scan.ac,
+           row:Math.round((y-scan.ay)/scan.pitchY)+scan.ar };
+}
+
 function drawScanGrid(){
   var px=Math.abs(scan.pitchX), py=Math.abs(scan.pitchY);
   var W=scan.W,H=scan.H;
   var bw=px*0.66, bh=py*0.66;
   for(var i=1;i<=S.cfg.total;i++){
     var p=idxToRC(i);
-    var x=scan.ax+(p.col-scan.ac)*scan.pitchX;
-    var y=scan.ay+(p.row-scan.ar)*scan.pitchY;
+    var q=scanCellXY(p);
+    var x=q.x, y=q.y;
     if(x<-px||y<-py||x>W+px||y>H+py) continue;
     var ok=scan.result && scan.result.has(i);
     var pend=ok && scan.pendingSet && scan.pendingSet.has(i);
@@ -215,8 +231,8 @@ function recalcScan(){
   var set=new Set(), checked=0, newly=0;
   for(var i=1;i<=S.cfg.total;i++){
     var p=idxToRC(i);
-    var x=scan.ax+(p.col-scan.ac)*scan.pitchX;
-    var y=scan.ay+(p.row-scan.ar)*scan.pitchY;
+    var q=scanCellXY(p);
+    var x=q.x, y=q.y;
     if(x<rx||y<ry||x>scan.W-rx||y>scan.H-ry) continue;
     checked++;
     if(samplePiece(x,y,rx,ry)>0.55){
@@ -246,25 +262,48 @@ function previewPendingSet(){
   return pend;
 }
 
-function computeScan(){
-  scan.calibrated=false; scan.result=null;
-  if(scan.anchors.length<2){ return; }
+// 标定求解。两锚点只有一组位移，但拼放方向可能相对编号框架旋转了 90°，
+// 对角标定因此有两种解释：普通（列→x、行→y）与旋转（行→x、列→y）。
+// 拼图块近似正方形，正确解释下横竖格距应接近——取明显更接近正方形的一种；
+// 分不出时按普通处理，用户可点微调条「⟳ 转向」手动切换。
+function solveScan(forceRot){
+  if(scan.anchors.length<2){ return false; }
   var a=scan.anchors[0], b=scan.anchors[1];
   var pa=idxToRC(a.idx), pb=idxToRC(b.idx);
   var dc=pb.col-pa.col, dr=pb.row-pa.row;
-  if(dc===0||dr===0){ toast("两块必须在不同行且不同列，请重新标定"); return; }
-  var pitchX=(b.x-a.x)/dc, pitchY=(b.y-a.y)/dr;
-  if(Math.abs(pitchX)<6||Math.abs(pitchY)<6){ toast("标定距离太近，请选相距更远的两块"); return; }
+  if(dc===0||dr===0){ toast("两块必须在不同行且不同列，请重新标定"); return false; }
+  function skew(px,py){
+    var m=Math.abs(px), n=Math.abs(py);
+    if(m<8||n<8) return 1e9;
+    return Math.abs(Math.log(m/n));
+  }
+  var s0=skew((b.x-a.x)/dc,(b.y-a.y)/dr);   // 普通朝向
+  var s1=skew((b.x-a.x)/dr,(b.y-a.y)/dc);   // 旋转 90°
+  var rot=(forceRot===undefined)?(s1<s0*0.6):forceRot;
+  var pitchX=rot?(b.x-a.x)/dr:(b.x-a.x)/dc;
+  var pitchY=rot?(b.y-a.y)/dc:(b.y-a.y)/dr;
+  if(Math.abs(pitchX)<6||Math.abs(pitchY)<6){ toast("标定距离太近，请选相距更远的两块"); return false; }
+  scan.rot=rot;
   scan.ax=a.x; scan.ay=a.y; scan.ac=pa.col; scan.ar=pa.row;
   scan.pitchX=pitchX; scan.pitchY=pitchY;
   scan.calibrated=true;
   $("scanNudge").style.display="flex";
   recalcScan();
+  return true;
+}
+function computeScan(){
+  scan.calibrated=false; scan.result=null;
+  solveScan();
+}
+function scanCalTip(){
+  $("scanTip").textContent="格距 "+Math.abs(scan.pitchX).toFixed(1)+"×"+Math.abs(scan.pitchY).toFixed(1)
+    +" · 识别 "+scan.result.size+" 块"+(scan.rot?" · 横向拼放":"")+" · 可微调 / 增删";
 }
 
 function resetScan(keepImg){
   scan.anchors=[]; scan.result=null; scan.cellsChecked=0; scan.picking=null;
   scan.calibrated=false;
+  scan.rot=false;
   scan.zoom=1; scan.ox=0; scan.oy=0;
   setScanMode("move");
   $("scanPick").classList.remove("on");
@@ -353,8 +392,7 @@ function scanImgXY(clientX,clientY){
 // 图像坐标 → 最近的格子编号
 function scanHitIdx(x,y){
   if(!scan.calibrated) return null;
-  var col=Math.round((x-scan.ax)/scan.pitchX)+scan.ac;
-  var row=Math.round((y-scan.ay)/scan.pitchY)+scan.ar;
+  var c=scanXYCell(x,y), col=c.col, row=c.row;
   if(row<1||col<1||row>S.rows||col>S.cfg.cols) return null;
   var i=rcToIdx(row,col);
   return (i>=1&&i<=S.cfg.total)?i:null;
@@ -527,6 +565,12 @@ $("scanNudge").addEventListener("click",function(e){
   if(n==="down") scan.ay+=sy;
   if(n==="plus"){ scan.pitchX*=1.012; scan.pitchY*=1.012; }
   if(n==="minus"){ scan.pitchX*=0.988; scan.pitchY*=0.988; }
+  if(n==="rot"){
+    // 切换拼放方向解释：按锚点重新求解（网格参数重算，微调失效）
+    if(solveScan(!scan.rot)) scanCalTip();
+    drawScan();
+    return;
+  }
   recalcScan(); drawScan();
 });
 
@@ -546,11 +590,11 @@ $("pickOk").addEventListener("click",function(){
     computeScan();
     drawScan();
     if(scan.calibrated){
-      $("scanTip").textContent="格距 "+Math.abs(scan.pitchX).toFixed(1)+"×"+Math.abs(scan.pitchY).toFixed(1)
-        +" · 识别 "+scan.result.size+" 块 · 可微调 / 增删";
+      scanCalTip();
       $("scanStep").innerHTML="已标定 <b>"+fmt(scan.anchors[0].idx)+"</b> 与 <b>"+fmt(scan.anchors[1].idx)+"</b><br>"
         +"<b>绿框</b>＝识别为已拼 · 灰框＝空位<br>"
         +"顶部工具条：<b>移动照片</b>拖动/缩放看细节 · <b>微调网格</b>整体挪动 · <b>增删结果</b>逐格修正<br>"
+        +(scan.rot?"照片拼放方向与编号相差 90°，已自动适配；网格不对点「⟳ 转向」<br>":"")
         +"<span class=\"sn\">只把识别到的块标为已拼，不会动其它块。</span>";
     }
   }
