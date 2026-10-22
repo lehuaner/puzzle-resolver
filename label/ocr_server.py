@@ -56,10 +56,58 @@ def warmup():
         cv2.putText(blank, "B-123", (40, 200), cv2.FONT_HERSHEY_SIMPLEX,
                     3.0, (30, 30, 30), 8, cv2.LINE_AA)
         get_ocr()(blank)
+        # rec-only 路径（fallback_rec 用）也预热一次
+        get_ocr()(blank, use_det=False, use_cls=False)
         _ready = True
         print("[ocr_server] warmup OK, listening on http://127.0.0.1:%d" % PORT)
     except Exception as e:  # noqa: BLE001
         print("[ocr_server] warmup FAILED: %r" % e)
+
+
+_NUM_HINT = re.compile(r"[A-Za-z]?\s*[-–—]?\s*\d{2,4}")
+
+
+def fallback_rec(img):
+    """det 兜底：白块上的淡印刷小字 PP-OCR det 常漏检（det 把白块本体误检成
+    文本行，真编号反而漏掉，实测 85891 的 D-773）。改走：亮域定位块本体 →
+    块内滑动横条带 → rec-only 紧凑识别（rec 对紧凑条带一喂即中，实测 0.96）。
+    返回 [(text, score), ...]。"""
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, bm = cv2.threshold(g, 160, 255, cv2.THRESH_BINARY)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(bm)
+    if n <= 1:
+        return []
+    big = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    x, y, w, h = [int(v) for v in stats[big, :4]]
+    if w < 40 or h < 40:
+        return []
+    bh = int(min(max(h * 0.26, 30), 130))
+    bw = int(w * 0.92)
+    x0 = x + max(0, (w - bw) // 2)
+    eng = get_ocr()
+    H, W = img.shape[:2]
+    out = []
+    steps = 5
+    for i in range(steps):
+        cy0 = y + int((h - bh) * i / (steps - 1)) if steps > 1 else y
+        cy0 = max(0, min(cy0, H - bh))
+        snip = img[cy0:cy0 + bh, x0:x0 + bw]
+        if snip.shape[0] < 24 or snip.shape[1] < 48:
+            continue
+        z = max(1.0, 48.0 / snip.shape[0])
+        if z > 1.0:
+            snip = cv2.resize(snip, None, fx=z, fy=z, interpolation=cv2.INTER_CUBIC)
+        for im in (snip, cv2.rotate(snip, cv2.ROTATE_180)):
+            try:
+                r = eng(im, use_det=False, use_cls=False)
+            except Exception:  # noqa: BLE001
+                continue
+            if r.txts:
+                for t, s in zip(r.txts, r.scores):
+                    t = str(t).strip()
+                    if t:
+                        out.append((t, float(s)))
+    return out
 
 
 def load_photo(name):
@@ -179,6 +227,17 @@ class Handler(BaseHTTPRequestHandler):
                     "score": float(scores[i]) if i < len(scores) else 0.0,
                     "box": box,
                 })
+            # 兜底：主推理（det 路线）没有可信的编号形态行时，条带盲扫 rec-only
+            # （低 conf 编号行不算数——如白块误检行 rec 出 '07713'@0.545 这类错串，
+            #   得让兜底有机会补上真正可读的候选，页面端按解析+分数择优）
+            if not any(_NUM_HINT.search(l["text"]) and l["score"] >= 0.72
+                       for l in lines):
+                with _ocr_lock:
+                    fb = fallback_rec(arr)
+                for t, s in fb:
+                    lines.append({"text": t, "score": s, "box": None, "fb": True})
+                if fb:
+                    print("[ocr_server] fallback_rec +%d candidates" % len(fb))
             self._json(200, {"lines": lines})
             print("[ocr_server] /ocr %dx%d -> %d lines"
                   % (arr.shape[1], arr.shape[0], len(lines)))
