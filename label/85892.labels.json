@@ -3,7 +3,7 @@
  "photo": "85892.jpg",
  "width": 4096,
  "height": 3072,
- "updated": 1792670441184,
+ "updated": 1792670648697,
  "pieces": [
   {
    "box": {
@@ -14,8 +14,8 @@
     "ang": -0.301
    },
    "label": "C-590",
-   "conf": 0.91,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -26,8 +26,8 @@
     "ang": 0.017
    },
    "label": "C-669",
-   "conf": 0.9,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -38,8 +38,8 @@
     "ang": 0
    },
    "label": "C-644",
-   "conf": 0.83,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -62,8 +62,8 @@
     "ang": -0.721
    },
    "label": "A-221",
-   "conf": 0.87,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -74,8 +74,8 @@
     "ang": 0.366
    },
    "label": "C-565",
-   "conf": 0.86,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -86,8 +86,8 @@
     "ang": -0.685
    },
    "label": "A-222",
-   "conf": 0.84,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -98,8 +98,8 @@
     "ang": -0.305
    },
    "label": "D-788",
-   "conf": 0.79,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -110,8 +110,8 @@
     "ang": 0.549
    },
    "label": "D-892",
-   "conf": 0.67,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -122,8 +122,8 @@
     "ang": -0.049
    },
    "label": "A-245",
-   "conf": 0.6,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -589,8 +589,8 @@
     "h": 269,
     "ang": 0.984
    },
-   "label": "",
-   "conf": 0,
+   "label": "A-241",
+   "conf": 1,
    "src": "manual"
   }
  ]
