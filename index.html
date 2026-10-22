@@ -183,6 +183,8 @@
           <button id="smMove" class="on" data-m="move">移动照片</button>
           <button id="smGrid" data-m="grid">微调网格</button>
           <button id="smEdit" data-m="edit">增删结果</button>
+          <span class="sdiv"></span>
+          <button id="bRecheck" style="display:none" title="对黄框标出的「有片但编号二义」的位置做单块放大复核">复核漏读 <b id="recheckN">0</b></button>
         </div>
         <div class="scan-tip" id="scanTip" style="display:none"></div>
         <div class="scan-pick" id="scanPick">
@@ -194,6 +196,7 @@
             </div>
           </div>
           <input class="pk-num" id="pickNum" inputmode="numeric" placeholder="例如 801" maxlength="6">
+          <div id="pickCands" style="display:none;flex-wrap:wrap;gap:6px;margin:8px 0 2px"></div>
           <div class="pk-res" id="pickRes">对应全局第 <b>-</b> 块</div>
           <div class="pk-btns">
             <button class="btn ghost sm" id="pickCancel">取消</button>
