@@ -71,6 +71,8 @@ input:focus{border-color:#3d6ea5;}
        border:1px solid var(--line); color:var(--tx); padding:9px 16px; border-radius:10px;
        font-size:13px; z-index:50; opacity:0; pointer-events:none; transition:opacity .2s;}
 #toast.on{opacity:1;}
+@keyframes attnPulse{ 0%,100%{box-shadow:0 0 0 0 rgba(255,212,94,0);} 50%{box-shadow:0 0 0 6px rgba(255,212,94,.35);} }
+#bDir.attn{ border-color:var(--sel); animation:attnPulse 1.4s ease-in-out 4; }
 /* ---- 选中块照片预览浮窗 ---- */
 #peek{display:none; position:absolute; right:12px; bottom:12px; background:#0b0f14;
       border:1px solid var(--line); border-radius:10px; padding:6px; z-index:15;
@@ -184,8 +186,9 @@ function loadPhotoBlob(blob, name, prefetched){
   var img=new Image();
   img.onload=function(){
     URL.revokeObjectURL(url);
-    // 照片本体缓存 IndexedDB：历史点击时可直接加载，不必再选文件
+    // 照片双保险：IndexedDB 缓存（本机快）+ 落库目录副本（换浏览器/清缓存后仍可恢复）
     idbSet("img:"+name, blob).catch(function(){});
+    persistPhotoImage(name, blob);
     setupPhoto(img, name, prefetched);
   };
   img.onerror=function(){ toast("图片加载失败"); };
@@ -875,8 +878,9 @@ $("hlist").addEventListener("click",async function(e){
     applyData(d); renderAll(); $("hist").classList.remove("on"); toast("已载入 "+d.pieces.length+" 块");
     return;
   }
-  // 照片缓存直接加载，不再让用户选文件
+  // 照片加载链：本机缓存 → 落库目录里的照片副本 → 让用户选一次（之后自动缓存）
   var blob=await idbGet("img:"+name).catch(function(){ return null; });
+  if(!blob) blob=await photoFromDir(name);
   if(blob){
     $("hist").classList.remove("on");
     loadPhotoBlob(blob, name, d);
@@ -1020,6 +1024,7 @@ var fsSupported = typeof window.showDirectoryPicker==="function";
 if(!fsSupported) $("bDir").style.display="none";
 
 $("bDir").addEventListener("click",async function(){
+  $("bDir").classList.remove("attn");
   try{
     if(dirHandle){
       var p=await dirHandle.queryPermission({mode:"readwrite"});
@@ -1041,13 +1046,21 @@ async function restoreDir(){
   if(!fsSupported) return;
   try{
     var h=await idbGet("dirHandle");
-    if(!h) return;
+    if(!h){
+      // 新环境（换浏览器/清缓存/首次 file:// 打开）：引导连接数据文件夹
+      toast("点「💾 落库目录」选择标注数据文件夹（label），已有标注会自动读回",5000);
+      $("bDir").classList.add("attn");
+      return;
+    }
     dirHandle=h;
     var p=await h.queryPermission({mode:"readwrite"});
     setDirDot(p==="granted"?"on":"warn");
     if(p==="granted"){
       migrateLocal();
       persistPhoto(P.name);
+    } else {
+      $("bDir").classList.add("attn");
+      toast("落库目录需要重新授权：点「💾 落库目录」连接 "+(h.name||"数据文件夹"),5000);
     }
   }catch(err){}
 }
@@ -1095,6 +1108,31 @@ async function persistPhoto(name){
   }catch(err){
     setDirDot("warn");
   }
+}
+// 照片副本也存进落库目录（与 .labels.json 并排同名）：文件夹自包含，
+// 换浏览器 / 清缓存后点历史仍能直接加载。已存在同名则跳过。
+async function persistPhotoImage(name, blob){
+  if(!dirHandle||!blob) return;
+  try{
+    var p=await dirHandle.queryPermission({mode:"readwrite"});
+    if(p!=="granted") return;
+    var fn=String(name).replace(/[\\/:*?"<>|]/g,"_");
+    try{ await dirHandle.getFileHandle(fn); return; }catch(e){}
+    var fh=await dirHandle.getFileHandle(fn,{create:true});
+    var w=await fh.createWritable();
+    await w.write(blob);
+    await w.close();
+  }catch(err){}
+}
+// 从落库目录找照片原图（历史点击时 IndexedDB 无缓存的后备）
+async function photoFromDir(name){
+  if(!dirHandle) return null;
+  try{
+    var p=await dirHandle.queryPermission({mode:"readwrite"});
+    if(p!=="granted") return null;
+    var fh=await dirHandle.getFileHandle(String(name).replace(/[\\/:*?"<>|]/g,"_"));
+    return await fh.getFile();
+  }catch(err){ return null; }
 }
 
 /* ================= 启动 ================= */
