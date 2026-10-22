@@ -1,49 +1,66 @@
 # 拼图定位台 · 长期备忘
 
-## 项目速览（v9 起）
-- 交付物：`index.html` + `src/frontend/`（Vite 构建）+ `server/`（Express+ws）**+ 代管 OCR 子进程**；启动 `npm run dev`（开发）或**双击 `start-lan-server.bat`（一个窗口同时起页面 8848 与 PP-OCR 8849）**；识别案例照片 `85889.jpg`、`85890.jpg` 在 `public/`。
-- 架构：ESM 模块 + 共享状态 `S`（store.js，活绑定不能跨模块赋值，import {S} 后读写属性）；编号八组合（origin tl/tr/bl/br × order col/row）；5 态（0 灰/1 绿/2 绿闪/3 待定黄/4 孤片浅黄）；4 邻接 BFS 连通域，待定→完成单向自动晋升；WS 实时同步 + 图谱管理 + 即时落库。
-- 图片识别：Otsu + 连通域(>1.2%) + 两点标定 + 圆形采样前景率>0.55；**支持拼放方向旋转 90°**（solveScan 按方形度 |log(|px|/|py|)| 自动选轴向，微调条「⟳ 转向」手动兜底）；应用结果后主界面自动包络盒居中（centerOnSet，只缩不放）+ 区域外沿金色描边（flashRegion，共边不画、9s 清除）。
-- **OCR 编号识别（v11）**：`ocr-templates.js`（15 类×≤20 样本×768 hex 软位图）+ `study/` 离线管线（`_ocr_lib.py` 字形库 / `_gen_cands.py` 候选生成 / `_build_atlas.py` 构建器，`_labels.json` 人工种子标注、`_cands.json` 中间数据同在 study/，脚本已 chdir 项目根，从任意位置可跑）；字形正立化=组件墨迹 bbox 宽高比（h≥1.12w 竖直/反之水平，勿用 PCA——半暗阴影带会拉偏）；提取时屏蔽同候选其他组件掩膜像素（bgv=235）；4 假设 F+/B+/R+/F- 匹配，dash 在 index1；全库自洽 100%（LOO 低是单样本类稀疏非算法缺陷）；编号格式 L-ddd（n=5 带 dash）或 Lddd（n=4）。
-- **扫描引导（v12）**：照片载入自动 OCR→`autoCalibrate`（v15 起为全局自洽选锚点，见下）；散块模式（ocr.map≥2）下 OCR 编号即「已拼」证据（conf≥0.5），网格框淡化+编号标注（conf 着色）；「应用并引导摆放」→ guide.js 队列（贴已拼区先、按主片质心距离近到远），底部浮条 gdOk（标1+promote）/gdSkip/Esc，gcur 金色脉冲高亮，与批量互斥（S.guideActive 存 store 防循环依赖）。
-- **拼好组机制（v13，655ce71，scan.js recalcScan 散块分支）**：散块照片上网格映射与片子实际摆放**无关**（85891 实测残差 10+ 格距，autoCalibrate 解出的 pitch 是 garbage）——拼合判定全部用 OCR 工作坐标：距离∈[0.7,1.5]×minSide（片宽=文本行投影长/0.27）+ 文本平行（读数 `ang`=comps 行方向，**无 90° 歧义**，mod180<20°）+ 相对向量沿轴（axial=max(|cosψ|,|sinψ|)，对 90° 旋转不变）≥0.65；编号网格校验 4 邻**或对角**（角贴合法）→并查集成组（8 色轮渲染于读数实际位置+右侧面板明细）；axial≥0.8 且网格对不上→红框可疑（拼错/误读），0.65~0.8 灰区不标记。E2E 验证法：`label/85891.labels.json` 人工框×0.75 合成读数注入 `scan.ocr.map`→微调按钮触发 recalcScan，4 组（含 13 片大簇）精确复现。
-- **PP-OCR 服务接入（v13.5，7423565）**：主界面扫描照片载入时优先调标注台同款服务（127.0.0.1:8849，服务端带 CORS；侧栏徽标探测），失败/空回退内置模板；2×2 重叠分片 6%（整图 det 字符过小必漏）；svc 框角有 90° 歧义（det 点序随框姿态翻转）→ 拼合判据对含 svc 读数的对按轴系折叠(mod90)，模板对保持 mod180；svc 读数合成 comps（沿 ang 跨 0.675×tl）。读数标注带「方向针」（沿文本方向带箭头，conf≥0.5）。**rapidocr 3.9.2 大坑：同一实例调一次 use_det=False 后全管线永久退化成单行垃圾**——ocr_server.py 已双引擎隔离（get_ocr 只全管线 / get_rec 只 rec-only），改 warmup 或 fallback 逻辑后必须重启服务进程。
-- **组内两点标定推算（v13.6+v14，4b4402e→64479c3）**：拼好组对组内已验证配对 (网格Δ,照片Δ) 最小二乘解局部网格基（退化/残差>0.35×side 检查），从成员**正贴邻格**沿前景蔓延推算（多轮 pass 到收敛）：过四道关才推——①贴邻（4 邻=同组成员读数或本组已推算格）②接缝（与锚点连线中点窗 maskWhite≥0.35；读数位是文字中心≠片心，真拼合可低至 0.39）③片心（中心窗≥0.85）④占位（预测位被其他编号读数占 <0.55×side→外簇的片不推不标）。无读数→推算蓝框（编号由绝对网格唯一确定）；occ 空而同号读数远→误读红标。**关键认知：旧 mask 有连通域过滤（<1.2% 面积清零），孤立散片在 mask 上是空的——bbox±2 全环外推在散堆里必被凸头/地板/外簇标名片骗过**（85891 实测 17 推 16 错；旧基线 13 推里 720/745/770 也错，位置上是 A-017/018/019 真片）。两遍可疑：簇贴簇不标疑。
-- **整块模式（v13.7，27f70ea）**：读数与全局网格映射中位残差<0.5 格距→blockMode（散块残差 10+ 格距物理不可能误判）：BFS 从对齐读数沿前景蔓延推算+簇级 OCR 支持检查（推算簇内 1.0 格距内有任何 conf 读数的格占比≥25%，杀光斑）；对齐读数统一画网格位+blockAng（2θ 向量均值）→排列整齐；灰格只画手动标定模式。85889：318=277 读+47 推算。
-- **自动重标 + 手动保留 OCR（v15，25589bc）**：`autoCalibrate` 不再挑"最远对"，改为**全局自洽打分**——conf 前 12 读数两两组合 × 两朝向(rot 0/1)，各自用该对解出的网格解释**全量读数**，取**残差中位数最小**的一对（等价"人眼挑两块最可信的片对齐"，与照片内容无关→换图零调参）。朝向由全局一致性直选，anchors=读数中心（不是片心）。`resetScan(keepImg,keepOcr)`：「重新标定」=保 OCR 自动重标（85889 318→318 无回归），**Shift/Alt+点击=手动点两块**（同样保 OCR）。**关键教训：手动标定它不是另一条算法，只是换锚点**——旧 resetScan 清 scan.ocr 会让手动落到纯前景网格分支、绕过整块模式的簇级 OCR 支持检查，这正是用户"手动标定只有光斑区错"的根因。修后手动 801/11 → 319=278+48、可疑 12、光斑区无框。
-- **边缘/范围/配色/补块（v16，d6de437）**：①`isPieceAt` 大窗下界 0.55→**0.50**（画面最外一列片大窗必有一侧压地板，828 矩形 0.543，旧值把整列边缘片全判掉；光斑靠上界 0.999 + 簇级 OCR 检查兜底）②组内推算 bbox **±2→±3**、单组上限 **12→16**（第三圈的 649 此前不在候选里）③**推算块沿用来源组色 + 虚线**（颜色=组归属，线型=证据强度；`inferredPos[idx].grp`）④**单轴组只在已知轴延伸**：垂直轴方向本质二义（有片侧既可能 +col 也可能 -col，237 与 187 几何等价），试着"转 90° + 前景投票"会推错编号，已回退⑤**「补一块」**：增删结果模式点没有框的片→输编号→`addManualReading` 伪造 comps 塞进 `scan.ocr.map`→重算，自动并入并查集并推出邻居（OCR 漏读的边角/孤片相邻块都靠它）。85889 320=277+49、85891 105=93+12。
-- **二义位枚举 + ROI 复核（v17，532298a）**：单轴组垂直方向有片 → 编号只可能**相邻两号之一**（二选一）；孤片四向 → **四选一**。裁决三招：①**排除法**——候选里已被别的读数占用的编号划掉，只剩 1 个就直接 `insertReading` 插入并重算（`scan._adopting` 防递归；85891 的 237 靠这条自动补上：候选 [237,187]，187 已占）②**ROI 单块放大**——`roiOCR` 按 **0.62 片宽**裁剪放大 **3.2×** 送 `/ocr`，整图 2×2 分片漏检的小字能读出来（实测 A-237@0.94、-422@0.98）；窗口越界时**挪中心不拉伸**；4 位数字串同时取前3/后3 再用候选筛③**人工点选**——黄虚线问号框，edit 模式点开浮层按候选数给按钮。低置信检出（conf 0.30~0.50）进 `scan.ocr.low` → 同样进「待选」一键确认，不再静默丢。组内渲染：同组框统一**中位片宽×0.88 + 2θ 平均角度** → 相邻边平行、等间距、不重叠。
-- **应用入口与可疑审核（v18，bf24264）**：**编号读取模式下「应用」曾被 `display:none` 顶掉**，只剩「应用并引导摆放」（逐块走的引导队列）→ 用户感觉"有可疑点就必须每块过一遍"。现两按钮并存（应用=直接落库 / 引导=可选）。右侧面板把可疑块渲染成 `编号 [✓] [✕]` chip：点编号 → `scanFocusOn(x,y,3.4)` 居中放大（换算 `ox = stageW/2 - x*fit*zoom - bx`）；✓ → `scan.suspAck` 里记下、recalc 时从 suspIdx 剔除；✕ → 从 `ocr.map`+`result` 删掉。
-- **应用=下一步 / 逐块审查（v19，c360bdc）**：有可疑点时 `#bApplyScan` 文案变 **「下一步：审查可疑 N」**，点击先 `startReview()`（`scan.review={list:suspListNow(),i:0}`）弹右上浮动面板 `#scanRv`（照标注台 `#edbar`）：单块放大预览（`drawRvZoom`+`#rvZoomIn/Out`）、诊断文案（blockMode 给「离编号该在的网格位 N 格」，散块给「拼合关系对不上」）、四个动作 **✓无误 / 🔍重识别 / ✕删掉 / ✓改为输入值** + ◀上一块 ▶下一块。审完（`rvNextUndecided` 返回 -1）→ `rvDone()` 收面板、按钮回「应用识别结果」。**两个收敛性坑**：①`suspAck` 剔除原本只在组内分支后做，blockMode 分支随后又往 suspIdx 加（误读）→ 必须在 `scan.suspIdx=` 赋值前**再剔一次**，且 `!scan._adopting` 避免打断 adopt 递归②`rvReplace/rvReocr` 必须 `suspAck.add(旧号)` **和** `add(新号)`——只收旧号的话新号下一轮 recalc 又被标红 → 可疑数不降、`rvAdvance` 找不到未审块、回弹同一块，审查永不收敛。
-- **删除残留 / 框方向 / 孤片误报 / 漏识别片（v20，b586b10）**：①**删了还有编号**——标签循环遍历 `ocr.results` 而删除只动 `ocr.map`，加 `scan.ocr.drop` 黑名单（标签/recalc 四处都让路），并把原读数 `{x,y,ang}` 存 `scan.ocr.keep`，补回来沿用原角度（不存则组内角度对不上、拼好组散架：85891 删 725 → 106→94，按原角度补回 → 106）。②**组框歪 40°**——det 框角有 **90° 歧义**（725:38.5° 与 748:-48.8° 是同一根轴），2θ 平均把两个垂直族抵消成 ≈-3°；改 **4θ 圆均值（周期 90°）**，方框对 90° 旋转免疫。725 组 41.4°、525 组 -33.4°，与实物一致。③**孤片误报可疑**——散堆里随便两块贴着放就满足「一个片距+轴平行+编号不邻」，旧 `defSusp` 全标红（85891 的 5 个全是误报）；散块模式降级为软提示 `scan.loosePairs`（灰字列出，不拦应用），**红色可疑只留给整块模式**「读数没落在自己编号该在的格子、且不在组里」，85891 5→0、85889 12→10 且每条都能说清差几格。④**漏识别片**——`scanGaps` 纯几何探测：片心圆窗 maskWhite 覆盖率落在**读数位自身分布**（15%~92% 分位）之间、且离任何读数/推算位 >0.72 片宽 → 灰虚线「?」；「补漏 N」逐块 ROI 放大识别，读不出的记 `scan.gapTried` 不再骚扰。85891 106→117（组 15→17），85889 的 9 处全是反光/块内空格 0 新增。
-- **自动收尾 / 按组引导 / 改号归组（v21，5c3e171）**：①`autoVerify(tag)` 串「复核漏读→补漏」，在**自动识别完**和**可疑点审完**后自动跑（`recheckWeak(cb)`/`fillGaps(cb)` 加了回调，`autoChain` 时静默、结束一条合计 toast）；运行期间禁用「应用」，避免应用半成品。85891 全自动 106→117。②引导改成 **item 级**：`{ids:[...],grp}`，**一个拼好组算一次引导**，先放离主片区近的单块再放组；浮条左侧 `#gdPic` 用 `scanGuideDraw(cv,ids)` 从**原照片**裁窗圈金框 = 告诉用户"是哪一块"；scan↔guide 用 `setGuideProviders(infoFn,drawFn)`（main.js 接线）避免循环 import。③**点已有结果的块 = 改号**（`applyRename(old,n)`：旧号进 drop+存角度→原位插新号→**自动归组**：在组里说"和 748/749/750 拼成一组"并闪整组+放大过去，孤片报"第x列第y行·暂时没拼上"）；浮层多一个「删掉这块」。公用件 `photoPosOf(idx)`、`scanFlash(ids)`。坑：`组 10 · 2 块` 折行挤掉编号区 → `组10·2块`+`nowrap`。
-- **OCR 服务托管 + 同源代理（v23，e8db0d3）**：页面**不再写死 `127.0.0.1:8849`**（局域网设备上那是它自己 → 徽标永远「未连接」，且 `ocr_server.py` 只 bind 127.0.0.1 本就没法直连）。改为 `server/ocr.js` 代管：开机探测 8849，没起来就 spawn `label/ocr_server.py`（**解释器必须实测 `-c "import rapidocr"`**：`py -3` → `%LOCALAPPDATA%\Programs\Python\Python3xx\python.exe` → `python`；本机 PATH 首个 python 是 managed 3.13.12 没装 rapidocr，盲选必失败）；已在跑就复用、挂了由 health 触发自愈（6s 防抖）。路由 `GET /ocrsvc/health`（未就绪带 `starting`）、`POST /ocrsvc/ocr`（`express.raw` 80mb 原样转发 180s）。前端 `OSVC.host` = http(s) 下 `location.origin+"/ocrsvc"`，仅 file:// 退回直连；探测退避重试 20 次，徽标三态 已连接/启动中…/未连接。`start-lan-server.bat` **杀端口后必须等真空闲**（netstat 循环，旧版只 ping 一次，重复双击会 EADDRINUSE 闪退）。坑：**别一边跑 bat 一边编辑它**（cmd 按字节偏移续读，会跳到任意行重复执行，本次伪现象是「一个 cmd 起两个 node」）；bat 改完用 python 转回 **CRLF**（Edit 工具写 LF）。
-- **调试陷阱：dist 换了 hash 但页面还跑旧 bundle**。`npm run build` 后必须 `navigate_page(reload, ignoreCache:true)` 再 E2E，否则验的是上一版代码（本次「改号不收敛」假象即此，源码修复本已在）。验版本看 `dist/assets/*.js` 文件大小/时间戳，别信构建日志里的 kB（十进制）。
-- **窄屏布局：照片区定高 + 信息栏自滚（v22，2a56514）**：窄屏（≤900）`.scan-body` 是定高 `column-reverse`，`.scan-side` 原来 `flex:none` 按内容长高，拼好组明细能有二三十行、把照片区挤没。改 `.scan-stage{flex:0 0 auto;height:clamp(160px,44vh,460px)}` + `.scan-side{flex:1 1 auto;min-height:0;overflow-y:auto}`（下限 160 是为横屏 375 高留活口）。两个必须记住的细节：①**数据栏底 padding 要归零**，`position:sticky;bottom:0` 对齐的是滚动容器**内容盒底**，留 10px 底 padding 就会在贴底栏下留缝、滚动的文字从缝里露出来；②贴底栏必须 `flex:0 0 100%;width:100%` + `background:var(--panel)`，否则在 `align-items:flex-start` 下只占内容宽（半行）。≤520 追加：三动作键 `font-size:12.5px` 压单行、`.scan-bar` 改 `nowrap + overflow-x:auto` 单行滑动（折行吃 50px 画面）、`.scan-tip` 改 `left/right:8px + transform:none`（同字数 4 行→2 行）。E2E 视口：`emulate({viewport:"480x900x2,mobile,touch"})`——`resize_page` 对真实窗口常不生效；**切 emulate 会关掉 `#ovScan`、清空 `__scan.result`**，要重点识别+重灌照片。
-- DOM 坑：`classList.add()` 不接受含空格字符串（抛 SyntaxError），多 token 必须逐个 add。
-- **引导增量 + 五处修复（v24，f66ce06）**：①「引导摆放」`#bApplyGuide` **不再预铺结果**（以前一点就全绿，引导失去意义），只把 `S.states!=1` 的块排成队列，`applyItem(ids)` 在点「放好了」时单条落库；跳过只 `G.k++` 不动状态。②当前目标**持续硬闪**：`startBlink()` 每 520ms 切 `.blinkOff`（CSS `.cell.gcur.blinkOff::after{display:none}` 藏描边），单块闪一块、整组整组闪，直到点下一步；`S.guideActive` 为假自停。③**待定数必须在 `promoteConnected()` 之后数**：先数会把「刚判待定、转瞬又被 promote 回完成」的算进去 → toast 报「其中 1 块待定」而格子其实是绿的（假警）。且**棋盘全空（`base.size===0`）时不能判待定**——此时 `mainComp(base)` 看的是棋盘上已有的块（可能只是别处一个待定块），会把刚放的第一条全判成待定；判据用 `hadMain=base.size>0`，不是 `mainSet.size`（后者永不为 0，写了等于没写）。④改号浮层黑图＝坐标系没换算：`photoPosOf()` 给 **OCR 工作坐标**（≈3072 宽），`#pickZoom` 吃 **scan 坐标**（`scan.W`），补 `k=scan.W/scan.ocr.w`。⑤微调网格拖不动图框＝`pointermove` 每帧 `recalcScan()` 把残差拉大 → `blockMode` 翻 false、`alignedIdx` 归零、结果 320→277 弹回原位；改「拖动只 `drawScan()`、松手 recalc」+ `scan.gridAdj` 锁 `blockMode` + 新增 `scanCellBase()`（用标定解 `baseAx/baseAy` 做**判据**，人工微调只影响**画在哪**）。⑥复核/补漏/补块/改号插进来的读数**只在 `scan.ocr.map`**，标签循环遍历 `ocr.results` 会让这些框「光秃秃」→ 改遍历 map（`ocr.drop` 黑名单仍生效）。
-- **聚焦与高亮统一（v26，9d3a9f7）**：①高亮只留一个实现 `beacon.js`——`beaconShow(ids)` 给目标挂 `.gcur`（常驻绿描边）+ 620ms 切 `.gblink`（`var(--green)` + `breath`，＝图例「进行中」），`beaconHide()` 收掉；找点 9 秒自动收。找点原来的金色 `.found`/`foundPulse` 已退役，小地图避让选择器改 `.cell.gcur`。②缩放只留一个实现 `board.focusSet(list,opt)`（找点 + 引导共用）：基准 `min(W,visH)*0.42/max(bw,bh)` 夹 **0.55~2.6**；再算「缩到刚好能看见最近一块已完成(1)」的 `need`，`need<基准` 时取 `max(0.3,need)`；0.3 还装不下就**让位平移**（目标朝反方向让出到中点的一半距离，但让位量按**屏幕像素**封顶 `(W/2-70)/s`，否则除以 s 后实际只挪几像素、等于没做）；`visH` 扣掉底部浮卡实测遮挡高度（`#guideBar`/`#locCard`），目标居中到 `visH/2`。③找点 `locate()` 改成**先 `showLocCard` 再 `focusSet`**（顺序反了量不到卡片高度）；引导删掉自带的 `focusItem`。
-- **引导三件套：撤销回退 / 连通生长 / 整格可见（v27，aadc009）**：①`interact.js` 提供 `setUndoHook(fn)`，`doUndo()` 回退棋盘后调它；`guideOnUndo` 拿撤销内容和 `G.applied` **栈顶**（`{k,ids}`）比对，一致就 `G.k=top.k` + `showCur()`。**必须用栈**：跳过不产生撤销记录，「放A→跳过B→撤销」撤销的是 A，用 `k--` 会停在 B。②`growOrder` 取代"先整块再单块"的排序：以棋盘已有块为种子，①挨着上一条 ②挨着已铺开整片 ③都不行才另起一片，每档内大块优先→近→编号小；顺序在进引导时算定（撤销按序号回退才成立）。③`focusSet` 的"至少一块已完成可见"按**整格**算：`need=(半视口-10)/(|d|+半格)`，别用中心点 + 固定 30px 边距——窄屏相邻一格时那块会被切一半。
-- **引导浮条窄屏排版**：`.gd-main` 允许 `flex-wrap`，`b`/`.gd-step` 给 `flex:0 0 auto`（以前步数徽标被 `跳过` 按钮压掉半个「已放 N」），`#gdInfo` 桌面 `flex:1 1 auto` 吃剩余宽度，`@media(max-width:520px)` 里改 `order:3;flex-basis:100%` → 编号+步数同排、位置信息独占第二行省略。
-- **连片排队 / 进行中色闪烁 / 按视口比例聚焦（v25，5ef0b99）**：①队列不再只看「OCR 组 + 单块」，先按 `S.adj`（网格 4 邻）并查集把目标块并成**连片**——编号相邻、本来就该拼成一整块的几片一次引导整片（标签 `连片·M块`，>9 块才退回 OCR 组/单块），排序 `att(贴已拼区) → n 大优先 → 质心距离 → head(最小编号≈从上到下从左到右)`；85891 48 条 → 34 条。②闪烁亮的那一相直接复用图例「进行中」（`.dot.f` = `background:var(--green)` + `animation:breath`），灭相退回块原本状态、位置靠常驻 `.gcur::after` 绿描边钉住——**`.cell.gcur` 必须 `overflow:visible`**，否则 `.cell{overflow:hidden}` 把描边裁没。③`focusItem(ids)` 取代原来的 `ensureVisible`（只缩不放、且不缩就不动）：bbox 塞进 `min(W, visH)*0.42`、scale 夹 **0.55~2.6**，`visH` 扣掉底部浮条盖住的高度后居中，目标既突出又不会被浮条压住。④窄屏浮条改 grid（`areas:"pic main" "btns btns"`）按钮独占底行，`#gdInfo` 一律 `order:3;flex:1 1 100%` 独占一行——浮条最宽只 560，塞一行时位置信息必被挤成「…」。**验浮条排版不必重跑识别**：`body.classList.add('guideon')` + 塞假文本 + 给 `#gdPic` 画黑块，直接量 rect。
+## 速览
+- 交付：`index.html` + `src/frontend/`（Vite）+ `server/`（Express+ws，代管 OCR 子进程）；`npm run dev` 或双击 `start-lan-server.bat`（一个窗口起页面 8848 + PP-OCR 8849）；案例照片 `public/85889.jpg`、`85890.jpg`。
+- 架构：ESM + 共享状态 `S`（store.js，活绑定不能跨模块赋值，import {S} 后读写属性）；编号八组合（origin tl/tr/bl/br × order col/row）；5 态（0 灰/1 绿/2 绿闪/3 待定黄/4 孤片浅黄）；4 邻 BFS 连通域，待定→完成单向自动晋升；WS 同步 + 图谱 + 即时落库。
+- 主界面扫描：Otsu + 连通域(>1.2%) + 两点标定 + 圆形采样前景率>0.55；支持拼放方向旋转 90°（solveScan 按方形度 |log(|px|/|py|)| 选轴向，「⟳ 转向」兜底）；应用后包络盒居中（centerOnSet 只缩不放）+ 区域外沿金色描边（flashRegion，共边不画、9s 清）。
 
-## 标定几何要点
-- 锚点对的是**片心**不是交界点（交界在晶格点，片心偏移半片）。
-- 标定对左右镜像免疫（负 pitch 吸收），但 col/row 优先顺序必须与实物一致。
-- 拼放方向可能整体旋转 90°（照片里列轴竖直、行轴水平），两点标定用方形度判据自动适配；|dc|≈|dr| 且位移≈45° 时本质二义，靠「⟳ 转向」人工兜底。
-- 编号印在片背、散片放置朝向任意，编号文字质心≠片心；相邻已拼片的编号位移=片距。
+## OCR 编号识别（v11）
+- `ocr-templates.js`（15 类×≤20 样本×768 hex 软位图）+ `study/` 离线管线（`_ocr_lib.py`/`_gen_cands.py`/`_build_atlas.py`；`_labels.json` 种子、`_cands.json` 中间数据；脚本已 chdir 项目根）。字形正立化用组件墨迹 bbox 宽高比（h≥1.12w 竖直；**勿用 PCA**，半暗阴影带会拉偏）；提取屏蔽同候选其他组件掩膜（bgv=235）；4 假设 F+/B+/R+/F-，dash 在 index1；格式 L-ddd（n=5）/Lddd（n=4）。
+- **PP-OCR 服务（v13.5）**：优先调标注台同款服务，失败/空回退内置模板；2×2 重叠分片 6%（整图 det 字符过小必漏）；svc 框角有 **90° 歧义** → 含 svc 读数的对按轴系折叠(mod90)，模板对保持 mod180；svc 读数合成 comps（沿 ang 跨 0.675×tl）。读数带方向针（conf≥0.5）。
+- **rapidocr 3.9.2 大坑**：同一实例调一次 `use_det=False` 后全管线永久退化成单行垃圾 → `ocr_server.py` 双引擎隔离（get_ocr 全管线 / get_rec rec-only）；改 warmup 或 fallback 后**必须重启服务进程**。
+
+## 拼好组 / 推算 / 整块模式（v13~v17）
+- **散块模式**：照片网格映射与摆放无关（85891 残差 10+ 格距）→ 判定全用 OCR 工作坐标：距离∈[0.7,1.5]×minSide（片宽=文本行投影长/0.27）+ 文本平行（读数 `ang`，**无 90° 歧义**，mod180<20°）+ 轴向性 `axial=max(|cosψ|,|sinψ|)`（对 90° 旋转不变）≥0.65；编号网格 4 邻**或对角**校验 → 并查集成组（8 色轮+右侧明细）。axial≥0.8 且网格对不上→红框可疑；0.65~0.8 灰区不标。
+- **组内两点标定推算**：组内配对 (网格Δ,照片Δ) 最小二乘解局部网格基（退化/残差>0.35×side 检查），从正贴邻格沿前景蔓延（多轮 pass）。四道关：①贴邻 ②接缝（连线中点窗 maskWhite≥0.35，真拼合可低至 0.39）③片心（中心窗≥0.85）④占位（预测位被其他编号读数占 <0.55×side）。**关键认知：旧 mask 有连通域过滤（<1.2% 面积清零）→ 孤立散片在 mask 上是空的**，bbox 全环外推在散堆里必被凸头/地板/外簇标名片骗过（85891 实测 17 推 16 错）。
+- **整块模式**：读数与全局网格映射中位残差<0.5 格距 → blockMode（散块 10+ 格距物理不可能误判）：BFS 从对齐读数沿前景蔓延 + **簇级 OCR 支持检查**（推算簇内 1.0 格距内有 conf 读数的格占比≥25%，杀光斑）；对齐读数统一画网格位 + blockAng；灰格只画手动标定模式。85889：318=277 读+47 推。
+- **v16**：①`isPieceAt` 大窗下界 0.55→**0.50**（最外一列片必有一侧压地板，828=0.543；光斑靠上界 0.999+簇级 OCR 兜底）②推算 bbox ±2→±3、单组上限 12→16 ③推算块**沿用来源组色+虚线**（`inferredPos[idx].grp`）④**单轴组只在已知轴延伸**（垂直方向本质二义：237 与 187 几何等价，转 90°+前景投票会推错编号，已回退）⑤「补一块」：点没框的片→输编号→`addManualReading` 伪 comps 塞 `scan.ocr.map`→重算并推邻居。
+- **v17 二义位**：单轴组垂直方向有片→相邻两号之一；孤片四向→四选一。①**排除法**：候选里已被占用的划掉，只剩 1 个就 `insertReading`+重算（`scan._adopting` 防递归；85891 的 237 靠这条补上）②**ROI 单块放大**：`roiOCR` 按 0.62 片宽裁放大 3.2× 送 `/ocr`（实测 A-237@0.94、-422@0.98）；越界**挪中心不拉伸**；4 位串取前3/后3 再用候选筛③人工点选黄虚线问号框。低置信（0.30~0.50）进 `scan.ocr.low`→「待选」。组内渲染：同组框统一**中位片宽×0.88**。
+
+## 审核 / 补漏 / 自动收尾（v18~v21）
+- **v18**：编号读取模式下「应用」曾被 `display:none` 顶掉 → 两按钮并存。可疑块渲染成 `编号 [✓][✕]` chip：点编号→`scanFocusOn(x,y,3.4)`（`ox=stageW/2 - x*fit*zoom - bx`）；✓→`scan.suspAck` 记下、recalc 剔除；✕→从 `ocr.map`+`result` 删。
+- **v19 逐块审查**：有可疑时 `#bApplyScan` 变「下一步：审查可疑 N」→`startReview()` 弹 `#scanRv`（单块放大 `drawRvZoom`、诊断文案、✓/🔍重识别/✕删/✓改值、◀▶）。**两个收敛性坑**：①`suspAck` 剔除必须在 `scan.suspIdx=` 赋值前**再剔一次**（blockMode 分支随后又加），且 `!scan._adopting` 防打断 adopt 递归 ②`rvReplace/rvReocr` 必须 `add(旧号)`**和**`add(新号)`——只收旧号则新号下轮又被标红，可疑数不降、回弹同一块。
+- **v20**：①**删了还有编号**——标签循环遍历 `ocr.results` 而删除只动 `ocr.map` → 加 `scan.ocr.drop` 黑名单，原读数 `{x,y,ang}` 存 `scan.ocr.keep`（不存则组内角度对不上、拼好组散架：85891 725 删→106→94，按原角度补回 106）②**组框歪 40°**——det 框角 90° 歧义，2θ 平均把两垂直族抵消 → 改 **4θ 圆均值（周期 90°）**③**孤片误报**——散块模式降级软提示 `scan.loosePairs`，红色可疑只留给整块模式（85891 5→0）④**漏识别片** `scanGaps`：片心圆窗 maskWhite 落在**读数位自身分布**（15%~92% 分位）之间、且离任何读数/推算位>0.72 片宽→灰虚线「?」；「补漏 N」逐块 ROI 识别，读不出记 `scan.gapTried`（85891 106→117，85889 的 9 处全是反光）。
+- **v21**：①`autoVerify(tag)` 串「复核漏读 `recheckWeak` → 补漏 `fillGaps`」，在自动识别完、可疑点审完后跑（`autoChain` 静默、结束一条合计 toast；运行期禁用「应用」）②引导 item 级 `{ids,grp}`，浮条 `#gdPic` 用 `scanGuideDraw` 从原照片裁窗圈金框；scan↔guide 用 `setGuideProviders(infoFn,drawFn)` 防循环 import ③**点已有结果的块=改号** `applyRename(old,n)`（旧号进 drop+存角度→原位插新号→自动归组并闪整组；孤片报"第x列第y行·暂时没拼上"）；浮层多「删掉这块」。公用件 `photoPosOf(idx)`、`scanFlash(ids)`。坑：`组 10 · 2 块` 折行挤掉编号区 → `组10·2块`+`nowrap`。
+
+## 引导 / 聚焦 / 高亮（v24~v27）
+- **高亮唯一实现 `beacon.js`**：`beaconShow(ids)` 挂 `.gcur`（常驻绿描边）+620ms 切 `.gblink`（`var(--green)`+`breath`＝图例「进行中」），`beaconHide()` 收；找点 9s 自动收。金色 `.found` 已退役，小地图避让选择器改 `.cell.gcur`。**`.cell.gcur` 必须 `overflow:visible`**，否则 `.cell{overflow:hidden}` 裁掉描边。
+- **聚焦唯一实现 `board.focusSet(list,opt)`**：基准 `min(W,visH)*0.42/max(bw,bh)` 夹 0.55~2.6；再算「最近一块已完成(1) 整格可见」`need=(半视口-10)/(|d|+半格)`，`s=max(0.3,min(s,need))`；0.3 装不下就**让位平移**（量按**屏幕像素**封顶 `(W/2-70)/s`）；`visH` 扣 `#guideBar`/`#locCard` 实测遮挡，目标居中到 `visH/2`。找点 `locate()` 必须**先 `showLocCard` 再 `focusSet`**。别用「中心点+固定边距」判可见——窄屏相邻一格会被切一半。
+- **引导队列 `growOrder`**：以棋盘已有块为种子，①挨着上一条 ②挨着已铺开整片 ③都不行才另起一片；每档内块大优先→近→编号小。顺序进引导时一次算定。
+- **撤销联动**：`interact.js` 的 `setUndoHook(fn)`，`doUndo()` 回退后调；`guideOnUndo(chunk)` 与 `G.applied` **栈顶** `{k,ids}` 比对内容，一致则 `G.k=top.k`+`showCur()`。**必须用栈不能 `k--`**：跳过不产生撤销记录（「放A→跳过B→撤销」撤销的是 A）。
+- **v24**：①引导不再预铺结果，只排 `S.states!=1` 的块，`applyItem(ids)` 点「放好了」才单条落库 ②目标持续硬闪（`S.guideActive` 假自停）③**待定数必须在 `promoteConnected()` 之后数**；**棋盘全空不能判待定**，判据 `hadMain=base.size>0`（`mainComp(base)` 在 base 空时返回棋盘现有最大那片，写 `if(mainSet.size)` 等于没写）④改号浮层黑图＝坐标系没换算：`photoPosOf()` 给 OCR 工作坐标，`#pickZoom` 吃 scan 坐标，补 `k=scan.W/scan.ocr.w` ⑤微调网格拖不动图框＝`pointermove` 每帧 recalc 把残差拉大→blockMode 翻 false、弹回原位；改「拖动只 `drawScan()`、松手 recalc」+`scan.gridAdj` 锁 blockMode + `scanCellBase()`（标定解只做**判据**，微调只影响**画在哪**）⑥复核/补漏/补块/改号插进来的读数只在 `scan.ocr.map`，标签循环必须遍历 **map**（遍历 results 会「光秃秃」）。
+- **v25**：先按 `S.adj` 并查集把目标块并成**连片**（≤9 块；>9 退回 OCR 组/单块），排序 `att(贴已拼区)→n 大→质心距离→head`；85891 48→34 条。
+- **v26**：找点与引导共用 focusSet/beacon；找点 900→0.3 倍时 7 块已完成全可见。
+
+## 布局 / 窄屏
+- **v22**：≤900 `.scan-stage{flex:0 0 auto;height:clamp(160px,44vh,460px)}` + `.scan-side{flex:1 1 auto;min-height:0;overflow-y:auto}`。①**数据栏底 padding 归零**——`position:sticky;bottom:0` 对齐内容盒底，留 10px 就从缝里露字 ②贴底栏必须 `flex:0 0 100%;width:100%`+`background:var(--panel)`，否则 `align-items:flex-start` 下只占半行。≤520：三动作键 12.5px 压单行、`.scan-bar` 改 `nowrap+overflow-x:auto`、`.scan-tip` 改 `left/right:8px+transform:none`。
+- **引导浮条**：≤600 改 `grid`，`areas:"pic main" "btns btns"`，按钮独占底行（`#gdSkip` 68px / `.okb` flex:1 / `.gd-x` 44px），`#gdInfo` 一律 `order:3;flex:1 1 100%`（浮条最宽 560，塞一行必被挤成「…」）。
+- DOM 坑：`classList.add()` 不接受含空格字符串（抛 SyntaxError），多 token 逐个 add。
+
+## 服务托管（v23）
+- 页面不写死 `127.0.0.1:8849`（局域网设备上那是它自己）；`server/ocr.js` 代管：探测 8849，没起就 spawn `label/ocr_server.py`（**解释器必须实测 `-c "import rapidocr"`**：`py -3`→`%LOCALAPPDATA%\Programs\Python\Python3xx\python.exe`→`python`；本机 PATH 首个 python 是 managed 3.13.12 没装 rapidocr）；已在跑就复用、挂了 health 触发自愈（6s 防抖）。路由 `GET /ocrsvc/health`（未就绪带 `starting`）、`POST /ocrsvc/ocr`（`express.raw` 80mb）。前端 `OSVC.host` = http(s) 下 `location.origin+"/ocrsvc"`，仅 file:// 直连；探测退避 20 次，徽标三态。`start-lan-server.bat` 杀端口后**必须等真空闲**。坑：**别一边跑 bat 一边编辑它**（cmd 按字节偏移续读会重复执行）；bat 改完转回 **CRLF**。
+
+## 坑清单（通用）
+- **dist 换 hash 但页面还跑旧 bundle**：build 后必须 `navigate_page(reload, ignoreCache:true)`。验版本看 `dist/assets/*.js` 大小/时间戳，别信构建日志 kB。
+- `canvas.width` 赋相同值也会清空内容 → layout 类函数须 `if(cv.width!==W)` 守卫。
+- 杀服务用 PID（`netstat -ano | grep :8848`），勿 `taskkill //IM node.exe`（会连 chrome-devtools MCP 一起杀）。
+
+## 标定几何
+- 锚点对的是**片心**不是交界点（交界在晶格点）。
+- 标定对左右镜像免疫（负 pitch 吸收），col/row 优先顺序必须与实物一致。
+- 拼接方向可能整体旋转 90°，用方形度判据自动适配；|dc|≈|dr| 且位移≈45° 本质二义，靠「⟳ 转向」兜底。
+- 编号印在片背、散片朝向任意，编号文字质心≠片心；相邻已拼片编号位移=片距。
 
 ## 测试技巧
-- **bat 双击闪退坑（已修 960dd2c）**：bat 含 UTF-8 中文（echo/路径）+ chcp 65001 会触发 cmd 解析错位（行被截断如 `'xe' 不是命令`、路径找不到）→ 闪退。规则：**bat 一律纯 ASCII**，中文路径用 `%USERPROFILE%` 等环境变量引用（运行时展开不经过文件字节解析）。
-- **file:// 单页工具**：经典 `<script src>` 相对路径在 file:// 下可加载（ESM module/fetch 才被 CORS 拦）；照片经 input file → URL.createObjectURL → canvas 不污染，可直接 getImageData。
-- **canvas 坑**：`cv.width=...` 赋相同值也会清空内容——layout 类函数须 `if(cv.width!==W)` 守卫，否则缩放后黑屏。
-- 识别流程 E2E：页面须同源 fetch 照片，`new DataTransfer()` 给 `#fImg` 设 files 再 dispatch change；锚点用 PointerEvent 派发到 scanStage（pointerId 勿残留，否则误进 pinch 分支，调试先 reload）。**必须先点 #bScan 开扫描页再载图**——否则 osvcProbe 未跑→OSVC.ok=false→静默回退内置模板 OCR（读数骤减，误判成回归）；现已模块加载即探测兜底。
-- canvas 取证：toDataURL 超限自动落 `.workbuddy/projects/**/tool-results/*.txt` → venv python 正则解码落盘 → Read 看图。
-- venv：`~/.workbuddy/binaries/python/envs/default/Scripts/python.exe`（Windows 是 Scripts/ 不是 bin/），Pillow 已装。
-- 杀服务用 PID（netstat -ano | grep :8848），勿 taskkill //IM node.exe（会连 chrome-devtools MCP 一起杀）。
+- **bat 一律纯 ASCII**：含 UTF-8 中文 + chcp 65001 会触发 cmd 解析错位闪退；中文路径用 `%USERPROFILE%`。
+- E2E：**必须先点 `#bScan` 开扫描页再载图**，否则 osvcProbe 未跑→静默回退内置模板（读数骤减，误判回归）；照片同源 fetch → `new DataTransfer()` 给 `#fImg` 设 files 再 dispatch change；PointerEvent 派到 scanStage（pointerId 勿残留）；`window.__autoBusy()` **是函数**。
+- 视口用 `emulate({viewport:"WxHxDPR,mobile,touch"})`（`resize_page` 常不生效）；**切 emulate 会关掉 `#ovScan`、清空 `__scan.result`**，要重点识别+重灌照片。验浮条排版不必重跑识别：`body.classList.add('guideon')`+假文本+`#gdPic` 画黑块，直接量 rect。
+- 调试钩子：`__scan` / `__addPiece(i,sx,sy)`（scan 坐标）/ `__focus` / `__gaps` / `__drop` / `__recalc` / `__autoBusy`。
+- canvas 取证：toDataURL 超限落 `.workbuddy/projects/**/tool-results/*.txt` → venv python 解码落盘 → Read 看图。venv：`~/.workbuddy/binaries/python/envs/default/Scripts/python.exe`。
+- `label/85891.labels.json` 人工框 ×0.75 合成读数注入 `scan.ocr.map` → 触发 recalc 可复现拼好组。
 
-## 标注台（label/，91b3940）
-- 双击 `label/index.html` 即用（file://）。用途：人工产出准确标注（编号+整块框），供 OCR 评估/重训。
-- 自动标注：亮域连通域(1500) + detectNumbers(3072) + 编号落框归属；**域含 ≥2 编号 → 按编号位置+均摊面积(sqrt(域像素/编号数))拆方框**（拼放粘连/乱堆堆叠都靠这条）；阴影堆块无域 → 编号+平均小块边长建框；垃圾编号过滤 n≥4 且 conf≥0.45。
-- 数据：localStorage `plabel:<照片名>` 自动保存（debounce 600ms）；导出合并 JSON，bbox 为**原图像素坐标**，`{bbox,label,conf,src:auto|manual}`。
-- 模板库/OCR 核心由 `src/frontend/ocr-templates.js`、`ocr.js` sed 转换生成（去 import/export）；**源文件更新后须重新转换**。
+## 标注台（label/）
+- 双击 `label/index.html` 即用（file://）；产出人工标注供 OCR 评估/重训。
+- 自动标注：亮域连通域(1500)+detectNumbers(3072)+编号落框归属；域含 ≥2 编号 → 按编号位置+均摊面积 sqrt(域像素/编号数) 拆方框；阴影堆块无域 → 编号+平均小块边长建框；垃圾编号过滤 n≥4 且 conf≥0.45。
+- 数据：localStorage `plabel:<照片名>`（debounce 600ms）；导出 bbox 为原图像素坐标 `{bbox,label,conf,src}`。
+- 模板库/OCR 核心由 `ocr-templates.js`、`ocr.js` sed 转换生成（去 import/export）；**源文件更新后须重转**。

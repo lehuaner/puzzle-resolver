@@ -29,6 +29,12 @@ window.__gaps=function(){ return fillGaps(); };                        // 同上
 window.__drop=dropReading;                                             // 同上：删除/恢复编号
 window.__recalc=function(){ return recalcScan(); };
 window.__autoBusy=function(){ return autoBusy; };                    // 同上：强制重算
+window.__extend=function(cb){ return extendInfer(cb); };             // 同上：延伸一圈
+window.__restore=function(i,n){ return restoreReading(i, n==null?i:n, null); }; // 同上：补回删掉的块
+window.__extLv=function(){ return extLv; };
+window.__autoVerify=function(tag,cb,opt){ return autoVerify(tag,cb,opt); };   // 同上：自动收尾链
+window.__rc=idxToRC;                                                  // 同上：编号→行列
+window.__cell=scanCellBase;                                           // 同上：行列→照片坐标
 var GRP_TXT=["#6ec8ff","#ffb050","#d878ff","#78ffd0","#ff78b8","#d0ff5a","#8ca0ff","#ffdc5a"]; // 拼好组文字色
 var scanCanvas=$("scanCanvas"), scanCtx=null;
 
@@ -259,6 +265,25 @@ function isPieceAt(x,y,rx,ry,strict){
   // 下界取 0.50：画面最外一列的片，大窗有一侧压在木地板上（828 实测矩形
   // 0.543、椭圆 0.605），用 0.55 会把整列边缘片全判掉，簇级检查已经兜住误判。
   return fgwB>0.50 && fgwB<0.999;
+}
+
+/* 纯灰度阈值前景覆盖率（只看 Otsu 阈值，不要求「小窗亮度均匀」）。
+   maskWhite 多加了「(max-min)/max < 0.10」这一条用来滤光斑渐变，代价是**把侧光/
+   阴影里的真片一起滤掉**——85890 实测：阴影里的片 maskWhite≈0.0，而 mask≈0.90，
+   木地板两个都是 0.00。所以「延伸」用它当片心判据（够不到远处光斑，见下）。 */
+function maskCov(x,y,rx,ry){
+  var hit=0,tot=0;
+  for(var dy=-ry;dy<=ry;dy+=2){
+    var py=Math.round(y+dy);
+    if(py<0||py>=scan.H) continue;
+    for(var dx=-rx;dx<=rx;dx+=2){
+      var px=Math.round(x+dx);
+      if(px<0||px>=scan.W) continue;
+      if((dx*dx)/(rx*rx)+(dy*dy)/(ry*ry)>1) continue;
+      tot++; if(scan.mask[py*scan.W+px]) hit++;
+    }
+  }
+  return tot?hit/tot:0;
 }
 
 function buildScanBase(){
@@ -635,8 +660,20 @@ function readingSide(r){
   var tl = (typeof r.tl==="number" && r.tl>0) ? r.tl : readingTl(r);   // reads 数组已存 tl
   return tl>0 ? Math.max(40,Math.min(240,tl/0.27)) : 0;
 }
-/* 某块在**照片**里的位置（OCR 工作坐标）：优先读数，其次推算位。
-   引导浮条的小窗、改号后的「这是哪一块」高亮都靠它。 */
+/* 照片上片宽的中位数（OCR 工作坐标）：删掉的读数没有 side 可用，
+   浮层放大镜和「点回被删的块」的命中半径都得靠它。 */
+function scanMedSide(){
+  var ss=[];
+  (scan.reads||[]).forEach(function(r){ var s=readingSide(r)||0; if(s>0) ss.push(s); });
+  if(!ss.length && scan.ocr) (scan.ocr.map||new Map()).forEach(function(r){
+    var s=readingSide(r)||0; if(s>0) ss.push(s);
+  });
+  if(!ss.length) return scan.ocr?Math.min(scan.ocr.w,scan.ocr.h)/18:64;
+  ss.sort(function(a,b){ return a-b; });
+  return ss[ss.length>>1];
+}
+/* 某块在**照片**里的位置（OCR 工作坐标）：优先读数，其次推算位，最后「已删除但记着位置」。
+   引导浮条的小窗、改号后的「这是哪一块」高亮、删掉后再点回来的浮层都靠它。 */
 function photoPosOf(i){
   var r=(scan.ocr&&scan.ocr.map)?scan.ocr.map.get(i):null;
   if(r){
@@ -646,6 +683,11 @@ function photoPosOf(i){
   }
   var ip=scan.inferredPos&&scan.inferredPos[i];
   if(ip) return { x:ip.x, y:ip.y, s:ip.side||Math.min(scan.ocr.w,scan.ocr.h)/18, ang:ip.ang||0, src:"infer" };
+  // 已被人工删掉：dropReading 存过原位置/角度，用它把「补回来」的浮层摆到原本那一块上
+  if(scan.ocr && scan.ocr.drop && scan.ocr.drop.has(i) && scan.ocr.keep && scan.ocr.keep[i]){
+    var kp=scan.ocr.keep[i];
+    return { x:kp.x, y:kp.y, s:scanMedSide(), ang:kp.ang||0, src:"keep" };
+  }
   return null;
 }
 /* 照片上短暂高亮一组块（改号后告诉用户「它和哪些块是一伙的」） */
@@ -656,6 +698,10 @@ function scanFlash(ids){
   if(scanFlashT) clearTimeout(scanFlashT);
   scanFlashT=setTimeout(function(){ scan.flash=null; drawScan(); }, 1600);
 }
+
+/* 「延伸」档位：0 = 常规范围；1 = 审完可疑点后放宽一圈（见 extendInfer）。
+   只影响推算的范围/判据，不影响读数与拼好组判定。 */
+var extLv=0;
 
 function recalcScan(){
   if(!scan.calibrated) return;
@@ -808,15 +854,20 @@ function recalcScan(){
         cmin=Math.min(cmin,rc.col); cmax=Math.max(cmax,rc.col);
       });
       var r0min=rmin,r0max=rmax,c0min=cmin,c0max=cmax;
-      rmin=Math.max(1,rmin-3); rmax=Math.min(S.rows,rmax+3);   // ±3：蔓延能多长两圈，
-      cmin=Math.max(1,cmin-3); cmax=Math.min(S.cfg.cols,cmax+3); // 四道关 + 上限兜底防扩散
+      /* 范围：常规 ±3（蔓延能多长两圈，四道关 + 上限兜底防扩散）；
+         延伸档 ±6 —— 「只有一组的大图」整张拼成一片时，第三、四圈正好卡在 ±3 外面，
+         这就是那几块「怎么也搞不上」的片。 */
+      var ring=extLv?6:3;
+      rmin=Math.max(1,rmin-ring); rmax=Math.min(S.rows,rmax+ring);
+      cmin=Math.max(1,cmin-ring); cmax=Math.min(S.cfg.cols,cmax+ring);
       if(oneAxis==="row"){ cmin=c0min; cmax=c0max; }           // 垂直轴方向二义 → 不扩展
       else if(oneAxis==="col"){ rmin=r0min; rmax=r0max; }
       var k=scan.W/scan.ocr.w, added=0;
       var rx=side*k*0.28;
       var groupSet={}, chain={};                     // 蔓延锚点：本组成员读数 / 本组已推算格
       members.forEach(function(i){ groupSet[i]=true; });
-      for(var pass=0; pass<4; pass++){               // 多轮蔓延：链式锚点逐轮生长
+      var maxPass=extLv?8:4, maxAdd=extLv?48:16;
+      for(var pass=0; pass<maxPass; pass++){          // 多轮蔓延：链式锚点逐轮生长
         var fresh=0;
         for(var r=rmin;r<=rmax;r++)for(var c=cmin;c<=cmax;c++){
           var idx=rcToIdx(r,c);                          // r/c 已夹在合法域内
@@ -862,7 +913,7 @@ function recalcScan(){
             inferredPos[idx]={x:px,y:py,ang:seed.ang,side:side,grp:gi,weak:false};
             chain[idx]={x:px,y:py};
             fresh++; added++;
-            if(added>16){ pass=99; break; }              // 单组外推上限，防映射意外扩散
+            if(added>maxAdd){ pass=99; break; }          // 单组外推上限，防映射意外扩散
           }
         }
         if(!fresh) break;
@@ -980,7 +1031,11 @@ function recalcScan(){
       function fgAt(idx){
         var p=idxToRC(idx), q=scanCellBase(p);   // 前景判定按标定解（微调只影响画在哪）
         if(q.x<rx||q.y<ry||q.x>scan.W-rx||q.y>scan.H-ry) return false;
-        return isPieceAt(q.x,q.y,rx,ry,true);
+        if(isPieceAt(q.x,q.y,rx,ry,true)) return true;
+        /* 延伸档：贴边的片大窗必有一侧压木地板、压在阴影带里的片大窗覆盖率会掉到
+           0.50 以下，严格判据把它们整片判掉（「只有一组的大图有几个点怎么也搞不上」）。
+           放宽到非严格档（只看片心椭圆），光斑仍由下面的「簇级 OCR 支持检查」兜住。 */
+        return extLv ? isPieceAt(q.x,q.y,rx,ry,false) : false;
       }
       function pushInfer(idx){
         if(inferredIdx.has(idx)) return;
@@ -1055,6 +1110,59 @@ function recalcScan(){
           set.delete(ci); inferredIdx.delete(ci); delete inferredPos[ci]; inferred--;
         });
       });
+      /* ---- 延伸：沿已确认的片往外再长一圈 ----
+         单组大照片（整片拼好再拍）常有一整块压在阴影/侧光里：maskWhite 要求「小窗亮度
+         均匀」，阴影有梯度 → 整片判成不是片（85890 实测 maskWhite≈0.00、mask≈0.90），
+         于是这几块既推不出来、OCR 没读到时连「增删」都点不动。
+         这里改用纯灰度阈值 mask（不要求均匀），并且**只从已确认的片 4 邻往外长、不跳格**
+         —— 远处光斑够不着；已经过了上面「簇级 OCR 支持检查」的格子就是种子。 */
+      if(extLv){
+        var seeds=new Set();
+        alignedIdx.forEach(function(i){ seeds.add(i); });
+        inferredIdx.forEach(function(i){ seeds.add(i); });
+        /* 延伸的准入比常规推算更严一格（宁可少推也不能把反光区整块算成片）：
+           ① 贴邻 ≥2 块已确认的片 = 确认区内部的空洞，填它安全；
+           ② 附近 0.8 格距内有任何 OCR 检出的文字（conf 不够被丢掉的也算）——
+              85890 的阴影区就靠这条（片在、编号也读到了，只是残差/置信之外）；
+           85889 那块反光区两条都不满足（整片无任何检出），所以延伸不会进去。 */
+        var arrE=scan.ocr.results||[];
+        function extOk(j){
+          var pj=idxToRC(j), na=0;
+          var nb=[[pj.row+1,pj.col],[pj.row-1,pj.col],[pj.row,pj.col+1],[pj.row,pj.col-1]];
+          for(var t=0;t<4;t++){
+            if(nb[t][0]<1||nb[t][1]<1||nb[t][0]>S.rows||nb[t][1]>S.cfg.cols) continue;
+            if(seeds.has(rcToIdx(nb[t][0],nb[t][1]))) na++;
+          }
+          if(na>=2) return true;
+          if(!arrE.length) return false;
+          var q=scanCellXY(pj);
+          for(var w=0;w<arrE.length;w++){
+            if(Math.hypot(arrE[w].x*k-q.x, arrE[w].y*k-q.y) < mp*0.8) return true;
+          }
+          return false;
+        }
+        var q3=Array.from(seeds), seen3=new Set(seeds), add3=0;
+        while(q3.length){
+          var cp=idxToRC(q3.pop());
+          var nb3=[[cp.row+1,cp.col],[cp.row-1,cp.col],[cp.row,cp.col+1],[cp.row,cp.col-1]];
+          for(var n3=0;n3<4;n3++){
+            var r3=nb3[n3][0], c3=nb3[n3][1];
+            if(r3<1||c3<1||r3>S.rows||c3>S.cfg.cols) continue;
+            var j3=rcToIdx(r3,c3);
+            if(j3<1||j3>S.cfg.total||seen3.has(j3)) continue;
+            seen3.add(j3);
+            var qp=scanCellBase(idxToRC(j3));
+            if(qp.x<rx||qp.y<ry||qp.x>scan.W-rx||qp.y>scan.H-ry) continue;
+            if(maskCov(qp.x,qp.y,rx,ry)<0.55) continue;          // 木地板/空位：止步
+            if(!extOk(j3)) continue;                             // 没有相邻实证 / 没有文字：不推
+            var rd3=scan.ocr.map.get(j3);
+            if(rd3 && !alignedIdx.has(j3)) continue;             // 别的编号占着：不抢
+            if(!seeds.has(j3)){ pushInfer(j3); add3++; }
+            q3.push(j3);
+            if(add3>80){ q3.length=0; break; }                   // 兜底上限
+          }
+        }
+      }
     }
     if(adopt.length && !scan._adopting){
       scan._adopting=true;
@@ -1199,6 +1307,7 @@ function resetScan(keepImg,keepOcr){
   scan.gaps=null; scan.gapTried=[];      // 补漏跑过但读不出编号的位置
   scan.weakDrop=[];                      // 人工「删掉这处提示」的二义位/漏读位
   scan.inferDrop=new Set();              // 人工删掉的推算块编号（不再推算）
+  extLv=0;                               // 延伸档位归零（重新标定/换照片后按常规范围算）
   scan.gridAdj=false;                    // 人工微调过网格？（保持整块模式，别被自动裁决推翻）
   scan.suspAck=new Set();                       // 人工点过「无误」的可疑块
   scan.review=null;                             // 可疑点逐块审查状态
@@ -1464,6 +1573,45 @@ function insertReading(idx,ox,oy){
   if(scan.ocr.drop) scan.ocr.drop.delete(idx);      // 人工补回来 → 撤销「已删除」
   return true;
 }
+/* 落点附近有没有「刚删掉、位置还记着」的编号（散块模式点空白片时用）。
+   命中半径 0.85 片宽：比读数框的命中半径略大一点，手指点偏一格也能补回来。 */
+function dropNear(p){
+  if(!scan.ocr) return null;
+  var kk=scan.W/scan.ocr.w, lim=scanMedSide()*kk*0.85;
+  var best=null, bd=1e9;
+  function probe(i,kp){
+    if(!kp||Math.hypot(kp.x*kk-p.x, kp.y*kk-p.y)>lim) return;
+    var d=Math.hypot(kp.x*kk-p.x, kp.y*kk-p.y);
+    if(d<bd){ bd=d; best=i; }
+  }
+  if(scan.ocr.drop) scan.ocr.drop.forEach(function(i){ probe(i, scan.ocr.keep&&scan.ocr.keep[i]); });
+  if(scan.inferDrop) scan.inferDrop.forEach(function(i){ probe(i, scan.ocr.keep&&scan.ocr.keep[i]); });
+  return best;
+}
+/* 把删掉的那块补回来：读数沿用原位置与原角度（角度丢了拼好组会散架），
+   也可以顺手改成别的编号（删错了 + 当初读错，一起改）。 */
+function restoreReading(old,num,pt){
+  if(!scan.ocr) return false;
+  if(num==null) return false;
+  if(num!==old && scan.ocr.map.has(num)){ toast("第 "+fmt(num)+" 块已经有读数了"); return false; }
+  var kp=(scan.ocr.keep&&scan.ocr.keep[old])||null;
+  var k=(scan.ocr&&scan.ocr.w)?(scan.W/scan.ocr.w):1;
+  var ox=kp?kp.x:(pt?pt.x/k:0), oy=kp?kp.y:(pt?pt.y/k:0);
+  if(num!==old) dropReading(old,true);        // 改成新号：旧号继续拉黑
+  insertReading(num,ox,oy);                   // 顺手把 num 从 ocr.drop 里去掉
+  if(scan.inferDrop && scan.inferDrop.has(num)) scan.inferDrop.delete(num);
+  recalcScan(); drawScan(); updateScanStats();
+  if(scan.calibrated) scanCalTip();
+  toast("已补回 "+fmt(num)+(num!==old?("（原本记成 "+fmt(old)+"）"):"")+fmt0Grp(num));
+  return true;
+}
+/* 补回/删掉时顺带报一句「它在哪一组」，省得用户自己回去找 */
+function fmt0Grp(i){
+  var gi=(scan.grpMap&&scan.grpMap[i]!=null)?scan.grpMap[i]:null;
+  if(gi!=null && scan.groups && scan.groups[gi] && scan.groups[gi].length>=2)
+    return " · 和这 "+(scan.groups[gi].length-1)+" 块拼成一组";
+  return "";
+}
 function addManualReading(idx,sx,sy,noRecalc){
   if(!scan.ocr||!scan.ocr.map) { toast("先载入照片完成识别"); return false; }
   if(scan.ocr.map.has(idx)){ toast("第 "+idx+" 块已经读到了"); return false; }
@@ -1676,18 +1824,44 @@ function fillGaps(cb){
   }
   step();
 }
-/* ---- 自动收尾：复核漏读 → 补漏 ----
-   这两步都是「单块 ROI 放大再识别一遍」，能补回整图 2×2 分片漏掉的小字编号
-   （实测 85891 一次多出 11 块），所以不该等人手点：自动识别完、可疑点审完，
-   都自动跑一遍。autoChain 打开时两步不各弹 toast，结束时给一条合计。 */
+/* ---- 延伸：把「推到边上就停」的推算再往外放一圈 ----
+   只有一组的大照片（整张拼成一片）里，边角那几块经常怎么也推不出来、增删也补不上：
+   散块模式的组内推算给的是 bbox ±3 / 单组 16 块 / 4 轮蔓延，第三、四圈正好卡死；
+   整块模式死在片心判据（贴边的片大窗有一侧压地板、阴影带宽高比掉到 0.50 以下）。
+   这里把范围/判据放宽一档再跑一次：多推出来了就保持放宽（结果要稳定），
+   一块也没多推就退回原范围（别让放宽状态长期留着）。
+   纯几何、不调 OCR 服务，所以审完可疑点后可以无人值守地自动跑。 */
+function extendInfer(cb){
+  if(!scan.calibrated || !scan.ocr || scan.ocr.map.size<2){ if(cb) cb(0); return; }
+  var before=scan.inferred||0, was=extLv;
+  extLv=1;
+  recalcScan(); drawScan(); updateScanStats();
+  if(scan.calibrated) scanCalTip();
+  var got=(scan.inferred||0)-before;
+  if(got<=0){
+    extLv=was;                                  // 没多推出一块：范围放大了也没用，退回去
+    recalcScan(); drawScan(); updateScanStats();
+  }
+  if(!autoChain) toast(got>0 ? ("延伸 "+got+" 块（放宽范围又推出一圈）")
+                  : "延伸没有再推出新块（边角那块可以点空白处补编号）");
+  if(cb) cb(got>0?got:0);
+}
+/* ---- 自动收尾：复核漏读 → 补漏 → 延伸 ----
+   前两步是「单块 ROI 放大再识别一遍」，能补回整图 2×2 分片漏掉的小字编号
+   （实测 85891 一次多出 11 块）；第三步是纯几何的往外推算。三步都不该等人手点：
+   自动识别完、可疑点审完，都自动跑一遍（延伸只在「审完可疑点」这一路跑 —— 要把
+   人工清理过的读数当基准，才敢放宽判据）。autoChain 打开时各步不弹 toast，结束时给一条合计。 */
 var autoChain=false, autoBusy=false;
-function autoVerify(tag, cb){
-  if(autoBusy || !scan.ocr || !OSVC.ok){ if(cb) cb(0); return; }
+function autoVerify(tag, cb, opt){
+  opt=opt||{};
+  var doExt = !!opt.extend && !extLv;
+  if(autoBusy || !scan.ocr){ if(cb) cb(0); return; }
   var nW=(scan.weakCells||[]).length, nG=(scan.gaps||[]).length;
-  if(!nW && !nG){ if(cb) cb(0); return; }
+  if(!OSVC.ok){ nW=0; nG=0; }                  // 服务没连：复核/补漏做不了，但延伸照跑
+  if(!nW && !nG && !doExt){ if(cb) cb(0); return; }
   autoBusy=true; autoChain=true;
-  $("scanTip").textContent="自动复核中…（复核漏读 + 补漏，别急着应用）";
-  var got=0;
+  $("scanTip").textContent="自动复核中…（复核漏读 + 补漏"+(doExt?" + 延伸":"")+"，别急着应用）";
+  var got=0, gotExt=0;
   var stage1=function(next){
     if(!nW) return next();
     recheckWeak(function(d){ got+=d; next(); });
@@ -1696,16 +1870,25 @@ function autoVerify(tag, cb){
     if(!(scan.gaps||[]).length) return next();       // 复核之后 gaps 会变，现算
     fillGaps(function(d){ got+=d; next(); });
   };
-  var wrap=function(next){ try{ next(); }catch(err){ autoBusy=false; autoChain=false; if(cb) cb(got); } };
+  var stage3=function(next){
+    if(!doExt) return next();
+    extendInfer(function(d){ gotExt+=d; next(); });
+  };
+  var wrap=function(next){ try{ next(); }catch(err){ autoBusy=false; autoChain=false; if(cb) cb(got+gotExt); } };
   wrap(function(){
     stage1(function(){
       stage2(function(){
-        autoBusy=false; autoChain=false;
-        if(scan.calibrated) scanCalTip();
-        drawScan(); updateScanStats();
-        if(got) toast((tag?tag+" · ":"")+"自动复核补回 "+got+" 块");
-        else if(tag) toast(tag+" · 没有可补的编号，可以直接应用");
-        if(cb) cb(got);
+        stage3(function(){
+          autoBusy=false; autoChain=false;
+          if(scan.calibrated) scanCalTip();
+          drawScan(); updateScanStats();
+          var msg=[];
+          if(got) msg.push("复核补回 "+got+" 块");
+          if(gotExt) msg.push("延伸 "+gotExt+" 块");
+          if(msg.length) toast((tag?tag+" · ":"")+msg.join(" · "));
+          else if(tag) toast(tag+" · 没有可补的编号，可以直接应用");
+          if(cb) cb(got+gotExt);
+        });
       });
     });
   });
@@ -1784,9 +1967,11 @@ function rvDone(){
   $("scanRv").style.display="none";
   scan.review=null;
   recalcScan(); drawScan(); updateScanStats();
-  toast("可疑点已全部审完，接着自动复核一遍");
-  // 可疑点审完 → 自动跑「复核漏读 + 补漏」，补回来的编号直接进结果
-  setTimeout(function(){ autoVerify("可疑点审完"); }, 260);
+  toast("可疑点已全部审完，接着自动复核 + 延伸一遍");
+  /* 可疑点审完 → 自动跑「复核漏读 + 补漏 + 延伸」：
+     前两步补回 OCR 漏掉的编号，第三步把清理过误读之后的新基准往外推一圈
+     （边角那几块「怎么也搞不上」的片，多半就在这一步出来）。 */
+  setTimeout(function(){ autoVerify("可疑点审完", null, {extend:true}); }, 260);
 }
 function rvAdvance(){
   var R=scan.review; if(!R) return;
@@ -1925,6 +2110,9 @@ function updateScanStats(){
   var nGp=(scan.gaps?scan.gaps.length:0);
   var fb=$("bFillGaps");
   if(fb){ fb.style.display=nGp?"inline-block":"none"; var fn2=$("fillGapsN"); if(fn2) fn2.textContent=nGp; }
+  // 延伸：编号读取模式下一直留着（审完可疑点会自动跑，也随时能手动再推一圈）
+  var eb=$("bExtend");
+  if(eb) eb.style.display=(scan.calibrated && scan.ocr && scan.ocr.map.size>=2)?"inline-block":"none";
   var det=$("scanGrpDetail");
   var parts=[];
   if(nG) scan.groups.forEach(function(m,gi){
@@ -2018,17 +2206,23 @@ $("pickZoom").parentNode.addEventListener("click",function(e){
 function openPick(p,clientX,clientY,add,cands,ren,opt){
   opt=opt||{};
   scan.picking={x:p.x,y:p.y,add:!!add,ren:(ren==null?null:ren),
-                inferred:(opt.inferred==null?null:opt.inferred), weak:opt.weak||null};
+                inferred:(opt.inferred==null?null:opt.inferred), weak:opt.weak||null,
+                restore:(opt.restore==null?null:opt.restore),
+                cell:(opt.cell==null?null:opt.cell)};
   var pr=$("scanPick");
   pr.classList.add("on");
   var h4=pr.querySelector("h4");
   if(h4) h4.textContent = (ren!=null)
     ? ("这块现在记成 "+fmt(ren)+" · 改成正确的编号")
-    : (scan.picking.inferred!=null)
-      ? ("这块是推算出来的（"+fmt(scan.picking.inferred)+"）· 没读到编号")
-      : (scan.picking.weak)
-        ? "这处有片、但编号认不准 · 输入编号或删掉这处提示"
-        : (add ? "这块拼图上印的数字（补进结果）" : "这一块上印的数字");
+    : (scan.picking.restore!=null)
+      ? ("这块你删掉了（原本记成 "+fmt(scan.picking.restore)+"）· 补回来？")
+      : (scan.picking.cell!=null)
+        ? ("这个格子该是 "+fmt(scan.picking.cell)+"，但它没算进来 · 确认补上？")
+        : (scan.picking.inferred!=null)
+          ? ("这块是推算出来的（"+fmt(scan.picking.inferred)+"）· 没读到编号")
+          : (scan.picking.weak)
+            ? "这处有片、但编号认不准 · 输入编号或删掉这处提示"
+            : (add ? "这块拼图上印的数字（补进结果）" : "这一块上印的数字");
   // 「删掉」适用范围：改已有结果 / 推算块 / 认不准提示（都能删）
   var pdl=$("pickDel");
   if(pdl) pdl.style.display =
@@ -2069,7 +2263,12 @@ function openPick(p,clientX,clientY,add,cands,ren,opt){
   if(top+420>stage.height) top=Math.max(8,clientY-stage.top-420);
   pr.style.left=Math.max(8,left)+"px";
   pr.style.top=Math.max(8,top)+"px";
-  $("pickNum").value = (ren!=null) ? String(ren) : "";
+  $("pickNum").value = (ren!=null) ? String(ren)
+    : (scan.picking.restore!=null) ? String(scan.picking.restore)
+    : (scan.picking.cell!=null) ? String(scan.picking.cell) : "";
+  var okb=$("pickOk");
+  if(okb) okb.textContent = (scan.picking.restore!=null) ? "补回来"
+    : (scan.picking.cell!=null) ? "补上" : "确定";
   updatePickRes();
   drawPickZoom();
   if(!onlyDel) setTimeout(function(){ try{ $("pickNum").focus(); }catch(err){} },60);
@@ -2180,9 +2379,29 @@ function endScanPointer(e){
     if(scan.ocr && scan.ocr.map.has(d.cell)) openPick(pt0,e.clientX,e.clientY,false,null,d.cell);
     else if(scan.inferredPos && scan.inferredPos[d.cell])
       openPick(pt0,e.clientX,e.clientY,false,null,null,{inferred:d.cell});   // 推算块：只能删
+    /* 删掉的块（读数进了 ocr.drop，或推算块进了 inferDrop）：以前这两条都不满足 →
+       点什么都没反应。现在给出「补回来」，位置用 keep 里记的原坐标（放大镜也摆对）。 */
+    else if(scan.ocr && ((scan.ocr.drop && scan.ocr.drop.has(d.cell))
+                      || (scan.inferDrop && scan.inferDrop.has(d.cell))))
+      openPick(pt0,e.clientX,e.clientY,false,null,null,{restore:d.cell});
+    /* 整块模式：网格位就是编号。这块照片上确实有片（点得到格子）却没算进结果
+       ——贴边压着地板、压在阴影带里的片，前景判据过不了，光「增删」根本补不上
+       （以前这里什么都不弹，用户说「点了它什么反应都没有」）。 */
+    else if(scan.blockMode){
+      var q0=scanCellXY(idxToRC(d.cell));
+      openPick(q0,e.clientX,e.clientY,true,null,null,{cell:d.cell});
+    }
   } else if(d.addPt && scan.mode==="edit"){
-    // 增删模式点空白片 → 补编号（命中二义位/漏读位时带候选与「删掉这处提示」）
-    openPick(d.addPt,e.clientX,e.clientY,true, d.weak?d.weak.cands:null,null,
+    /* 增删模式点空白片 → 补编号（命中二义位/漏读位时带候选与「删掉这处提示」）。
+       散块模式下 scanHitIdx 只认「现有读数/推算位」，刚删掉的那块在照片上是空白的，
+       会走到这里 —— 落点附近有已删除的编号时直接给「补回来」，不用重新输一遍。 */
+    var dc=dropNear(d.addPt);
+    if(dc!=null){
+      var kk2=(scan.ocr&&scan.ocr.w)?(scan.W/scan.ocr.w):1;
+      var pz=photoPosOf(dc);
+      var pt1=pz?{x:pz.x*kk2, y:pz.y*kk2}:{x:d.addPt.x, y:d.addPt.y};
+      openPick(pt1,e.clientX,e.clientY,false,null,null,{restore:dc});
+    } else openPick(d.addPt,e.clientX,e.clientY,true, d.weak?d.weak.cands:null,null,
       d.weak?{weak:d.weak}:null);
   }
 }
@@ -2224,6 +2443,10 @@ document.querySelector(".scan-bar").addEventListener("click",function(e){
   else if(b.id==="szFit") scanResetView();
   else if(b.id==="bRecheck") recheckWeak();
   else if(b.id==="bFillGaps") fillGaps();
+  else if(b.id==="bExtend"){
+    if(extLv) toast("已经延伸过了（再点不会多推；改完结果会自动重算）");
+    else extendInfer();
+  }
 });
 
 $("scanNudge").addEventListener("click",function(e){
@@ -2291,6 +2514,22 @@ $("pickOk").addEventListener("click",function(){
     scan.picking=null; $("scanPick").classList.remove("on");
     applyRename(old,idx);
     return;
+  }
+  if(scan.picking.restore!=null){                  // 「补回来」：删掉的块按原位置/原角度恢复
+    var ro=scan.picking.restore, rp={x:scan.picking.x,y:scan.picking.y};
+    scan.picking=null; $("scanPick").classList.remove("on");
+    restoreReading(ro,idx,rp);
+    return;
+  }
+  if(scan.picking.cell!=null){                     // 整块模式补这一格（编号默认＝格子编号）
+    var cp={x:scan.picking.x,y:scan.picking.y};
+    scan.picking=null; $("scanPick").classList.remove("on");
+    if(!scan.ocr.map.has(idx)) addManualReading(idx,cp.x,cp.y);
+    else toast("第 "+fmt(idx)+" 块已经有读数了");
+    return;
+  }
+  if(scan.picking.inferred!=null){                 // 推算块浮层只有「删掉」，确定键不该生效
+    scan.picking=null; $("scanPick").classList.remove("on"); return;
   }
   if(scan.picking.add){                            // 「补一块」：伪读数 + 立即重算
     var pt={x:scan.picking.x,y:scan.picking.y};
