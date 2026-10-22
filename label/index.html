@@ -289,11 +289,16 @@ $("ocrBadge").addEventListener("click",function(){
   probeOcrSvc();
   toast(OSVC.ok?"OCR：高精度（RapidOCR）":"正在检测 RapidOCR 服务…");
 });
-// "B-241"/"B241"/"B—241" 等 → {letter,digits}
+// "B-241"/"B241"/"B—241"/"7-793"（字母被照片边缘裁掉）→ {letter,digits}
+// letter 可为空串（调用方决定是否可继承/可用）；纯数字无分隔符不认（防背景噪声）
 function parseNumText(t){
   if(!t) return null;
-  var m=String(t).replace(/\s+/g,"").match(/([A-Da-d])[-–—]?(\d{1,4})/);
-  return m ? { letter:m[1].toUpperCase(), digits:m[2] } : null;
+  var s0=String(t).replace(/\s+/g,"");
+  var m=s0.match(/([A-Da-d])[-–—]?(\d{2,4})(?!\d)/);
+  if(m) return { letter:m[1].toUpperCase(), digits:m[2] };
+  var m2=s0.match(/^.\s*[-–—]\s*(\d{2,4})(?!\d)/);   // 首字符非 A-D：如 "7-793"
+  if(m2) return { letter:"", digits:m2[1] };
+  return null;
 }
 async function svcOcr(req){                  // req: {img:dataURL} 或 {file:name, roi?}
   var r=await fetch(OSVC.host+"/ocr",{ method:"POST",
@@ -433,12 +438,38 @@ async function doAutoLabel(){
       }
       if(hit<0) orphans.push(r); else byBox[hit].push(r);
     });
-    // 小块平均边长（供孤儿编号估框）
-    var avgSide=0, smalls=boxes.filter(function(bx){ return bx.cnt<n*0.15; });
-    if(smalls.length){
-      smalls.forEach(function(bx){ avgSide+=Math.sqrt(bx.cnt); });
-      avgSide/=smalls.length;
-    } else avgSide=P.W*0.1;
+    // 块尺寸基准（供孤儿编号估框/大框钳制）。域面积均值/中位都会被粘连域拉高
+    // （85892 一半域是粘连的，中位 169 vs 真块 91）——三级取基准：
+    // ① 已有人工框的中位宽（同一照片的最准真值）
+    // ② 编号中心最近邻间距的中位 ÷1.08（相邻块中心距≈块宽×1.05）
+    // ③ 域面积中位 ×0.85 兜底
+    var mW=P.pieces.filter(function(p){ return p.src==="manual"&&p.box&&p.box.w>20; })
+                   .map(function(p){ return p.box.w; })
+                   .sort(function(a,b){ return a-b; });
+    var avgSide;
+    if(mW.length){
+      avgSide=mW[Math.floor(mW.length/2)];
+    } else {
+      var pts=results.map(function(r){ return [r.x*ocrK, r.y*ocrK]; });
+      if(pts.length>=4){
+        var nn=[];
+        for(var i1=0;i1<pts.length;i1++){
+          var bd=1e9;
+          for(var j1=0;j1<pts.length;j1++){
+            if(i1===j1) continue;
+            var dd=Math.hypot(pts[i1][0]-pts[j1][0], pts[i1][1]-pts[j1][1]);
+            if(dd<bd) bd=dd;
+          }
+          nn.push(bd);
+        }
+        nn.sort(function(a,b){ return a-b; });
+        avgSide=nn[nn.length>>1]/1.08;
+      } else {
+        var sq=boxes.map(function(bx){ return Math.sqrt(bx.cnt); }).sort(function(a,b){ return a-b; });
+        avgSide=(sq.length?sq[Math.floor(sq.length/2)]:P.W*0.1)*0.85;
+      }
+    }
+    avgSide=Math.max(30, avgSide);
     // 全图 OCR 对小字符/低对比编号会漏检（整图 4096px 上字符仅 30px 高，det 漏；
     // 局部裁剪放大到 ~560px 后即可读出）——对没读到编号的块逐个局部补扫
     var rescanned=0;
@@ -454,7 +485,7 @@ async function doAutoLabel(){
                          w:bbx[2], h:bbx[3], ang:0 } };
         var bbest=null;
         try{ bbest=await svcOcrRoi(fake); }catch(err){}
-        if(bbest){
+        if(bbest && bbest.letter){
           rescanned++;
           byBox[missIdx[mi]].push({ letter:bbest.letter, digits:bbest.digits,
             conf:bbest.conf, x:bbx[0]+bbx[2]/2, y:bbx[1]+bbx[3]/2,
@@ -466,26 +497,32 @@ async function doAutoLabel(){
     function mkRot(cx,cy,w,h,ang){ return {cx:cx,cy:cy,w:w,h:h,ang:ang||0}; }
     var fresh=[];
     function mkPiece(box,r){
-      return { id:P.nextId++, box:box, label:r?r.letter+"-"+r.digits:"",
-               conf:r?r.conf:0, src:"auto" };
+      // r.letter 为空（字母被裁）时不建编号，只留框待人工补
+      return { id:P.nextId++, box:box, label:(r&&r.letter)?r.letter+"-"+r.digits:"",
+               conf:(r&&r.letter)?r.conf:0, src:"auto" };
     }
     boxes.forEach(function(bx,b){
       if(keepBoxesOverlap(bx.bbox)) return;      // 与人工框重叠的自动域跳过
       var rs=byBox[b];
       if(rs.length>=2){
-        // 域含多个编号（块相邻粘连/堆叠）：按编号位置+均摊块面积拆旋转方框
-        var s=Math.sqrt(bx.cnt/rs.length);
+        // 域含多个编号（块相邻粘连/堆叠）：按编号位置拆旋转方框
+        // 面积均摊会被阴影粘连撑大（域 cnt 虚大）→ 用 avgSide 钳制
+        var s=Math.min(Math.sqrt(bx.cnt/rs.length), avgSide*1.35);
         rs.forEach(function(r){
           fresh.push(mkPiece(mkRot(r.x*ocrK, r.y*ocrK, s, s, norm90(r.ang)), r));
         });
       } else if(rs.length===1){
-        // 单编号域：域中心+域均摊面积，方向取编号排列轴
-        var bb=bx.bbox, s=Math.sqrt(bx.cnt);
+        // 单编号域：域中心+域均摊面积（同样钳制），方向取编号排列轴
+        var bb=bx.bbox, s=Math.min(Math.sqrt(bx.cnt), avgSide*1.35);
         fresh.push(mkPiece(mkRot(bb[0]+bb[2]/2, bb[1]+bb[3]/2, s, s, norm90(rs[0].ang)), rs[0]));
-      } else {
-        // 无编号域：AABB 兜底，方向 0 待人工转
-        var bb2=bx.bbox;
-        fresh.push(mkPiece(mkRot(bb2[0]+bb2[2]/2, bb2[1]+bb2[3]/2, bb2[2], bb2[3], 0), null));
+      } else if(rs.length===0){
+        // 无编号域：服务模式下延后网格化建框（先补扫再建，见下方 missIdx 处理）；
+        // 内置 OCR 模式直接 AABB 兜底（尺寸钳制），方向 0 待人工转
+        if(!viaSvc){
+          var bb2=bx.bbox;
+          var s2=Math.min(Math.max(bb2[2],bb2[3]), avgSide*1.35);
+          fresh.push(mkPiece(mkRot(bb2[0]+bb2[2]/2, bb2[1]+bb2[3]/2, s2, s2, 0), null));
+        }
       }
     });
     // 未落框的编号：按平均块面积给估算旋转框，供人工校准
@@ -518,7 +555,7 @@ async function doAutoLabel(){
             if(near) continue;
             var b2=null;
             try{ b2=await svcOcrRoi({ box:{cx:gx,cy:gy,w:avgSide,h:avgSide,ang:0} }); }catch(err){}
-            if(b2 && !have[b2.letter+"-"+b2.digits]){
+            if(b2 && b2.letter && !have[b2.letter+"-"+b2.digits]){
               rescanned++;
               have[b2.letter+"-"+b2.digits]=true;
               fresh.push(mkPiece(mkRot(gx,gy,avgSide,avgSide,norm90(b2.angOff||0)), b2));
@@ -526,6 +563,25 @@ async function doAutoLabel(){
           }
         }
       }
+      // 补扫后仍无编号的域：按 avgSide 网格化建空框（不再用被粘连撑大的大 AABB）
+      (typeof missIdx!=="undefined"?missIdx:[]).forEach(function(b){
+        var bx3=boxes[b], bb4=bx3.bbox;
+        var est3=Math.max(1,Math.round(bx3.cnt/(avgSide*avgSide)));
+        var cols3=Math.max(1,Math.round(bb4[2]/avgSide));
+        var rows3=Math.max(1,Math.round(est3/cols3));
+        var wN=Math.min(avgSide, bb4[2]/cols3), hN=Math.min(avgSide, bb4[3]/rows3);
+        for(var r3=0;r3<rows3;r3++){
+          for(var c3=0;c3<cols3;c3++){
+            var gx3=bb4[0]+(c3+0.5)*bb4[2]/cols3, gy3=bb4[1]+(r3+0.5)*bb4[3]/rows3;
+            var covered=fresh.some(function(q){
+              var dx=q.box.cx-gx3, dy=q.box.cy-gy3;
+              return dx*dx+dy*dy < Math.pow(avgSide*0.5,2);
+            });
+            if(covered) continue;
+            fresh.push(mkPiece(mkRot(gx3,gy3,wN,hN,0), null));
+          }
+        }
+      });
     }
     // 已有人工确认的块保留不动
     var keep=P.pieces.filter(function(p){ return p.src==="manual"; });
@@ -1008,6 +1064,16 @@ async function localOCR(p){
     }
   }
   if(best){
+    // 字母被裁（如 "7-793"）：块已有编号时继承其区字母；没有则视为未读全
+    if(!best.letter){
+      var pl=(p.label&&/^[A-Da-d]/.test(p.label))?p.label[0].toUpperCase():"";
+      if(pl){ best.letter=pl; }
+      else{
+        toast("框 #"+(P.pieces.indexOf(p)+1)+" 读出数字 "+best.digits+"，但区字母被裁/缺失，请手输完整编号",true);
+        saveSoon(); renderAll();
+        return;
+      }
+    }
     p.label=best.letter+"-"+best.digits;
     p.conf=best.conf;
     // 重识别成功后回到「未确认」态：需要人工再核一遍才算数
