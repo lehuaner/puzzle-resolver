@@ -307,7 +307,10 @@ async function svcOcr(req){                  // req: {img:dataURL} 或 {file:nam
 // 送识别的图像来源：canvas 被污染（file:// 直读）时改发文件名，由服务端代读磁盘
 function svcReqFor(){
   if(P.tainted) return { file:P.name };
-  return { img:P.img.toDataURL("image/jpeg",0.92) };
+  var c=document.createElement("canvas");      // P.img 是 <img>：先画到 canvas 再导出
+  c.width=P.ow; c.height=P.oh;
+  c.getContext("2d").drawImage(P.img,0,0);
+  return { img:c.toDataURL("image/jpeg",0.92) };
 }
 // 整图 → 服务结果，转成与 detectNumbers 同构的数组
 // （x,y=编号中心，OCR 尺度坐标；ang=行框长边方向；n 恒过质量关）

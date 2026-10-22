@@ -37,6 +37,9 @@ if (isProd) {
   }
   // 数据文件不对外暴露
   app.use("/puzzle-data.json", function (req, res) { res.status(404).end("not found"); });
+  // 标注台（label/）：http 方式访问时照片同源加载，canvas 不被污染，
+  // 自动标注（块检测需读照片像素）在 http 下完整可用
+  app.use("/label", express.static(path.join(ROOT, "label"), { index: "index.html" }));
   app.use(express.static(DIST, { maxAge: "1h", index: "index.html" }));
   app.get("*", function (req, res) {
     res.sendFile(path.join(DIST, "index.html"));
