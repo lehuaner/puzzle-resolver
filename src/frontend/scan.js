@@ -23,6 +23,7 @@ var scan={
   ocr:null             // {results, map:Map(idx->rec), w, h} 散块编号识别（OCR 工作分辨率）
 };
 window.__scan=scan;    // 调试/E2E 钩子（与 window.__ocr 同模式）
+window.__addPiece=function(i,x,y){ return addManualReading(i,x,y); };  // 同上
 var GRP_TXT=["#6ec8ff","#ffb050","#d878ff","#78ffd0","#ff78b8","#d0ff5a","#8ca0ff","#ffdc5a"]; // 拼好组文字色
 var scanCanvas=$("scanCanvas"), scanCtx=null;
 
@@ -228,8 +229,10 @@ function isPieceAt(x,y,rx,ry,strict){
   var fgwB=hitB/totB;
   // 大窗白纸命中率：光斑核心 ≈1.0（纯亮无缝）、光斑中圈/骑缝 ≤0.85、
   // 阴影白纸 0.55~0.88（与光斑中圈重叠，交给簇级「OCR 支持检查」区分——
-  // 真片区域至少会有一个检出哪怕被丢，光斑区什么字都没有）
-  return fgwB>0.55 && fgwB<0.999;
+  // 真片区域至少会有一个检出哪怕被丢，光斑区什么字都没有）。
+  // 下界取 0.50：画面最外一列的片，大窗有一侧压在木地板上（828 实测矩形
+  // 0.543、椭圆 0.605），用 0.55 会把整列边缘片全判掉，簇级检查已经兜住误判。
+  return fgwB>0.50 && fgwB<0.999;
 }
 
 function buildScanBase(){
@@ -421,20 +424,27 @@ function drawScanGrid(){
       var x=ip.x*k3, y=ip.y*k3;
       if(x<-60||y<-60||x>W+60||y>H+60) return;
       var side=ip.side*k3;
+      // 推算块沿用「来源拼好组」的颜色（同组同色，视觉上才是一整块），
+      // 用虚线边框区分「推算」与「读数」——颜色=组归属，线型=证据强度。
+      // weak（单轴组转 90° 补出来的那根轴）：黄虚线 + 编号带「?」，方向需要人核。
+      var gcol = (ip.grp!=null) ? GRP_COLORS[ip.grp%GRP_COLORS.length] : null;
+      var strokeCol = ip.weak ? "rgba(255,214,80,.95)"
+        : (gcol ? gcol.replace(".30",".95") : "rgba(110,190,255,.95)");
       scanCtx.save();
       scanCtx.translate(x,y); scanCtx.rotate(ip.ang||0);
-      scanCtx.fillStyle="rgba(80,170,255,.30)";
+      scanCtx.fillStyle = ip.weak ? "rgba(255,200,40,.26)" : (gcol || "rgba(80,170,255,.30)");
       scanCtx.fillRect(-side/2,-side/2,side,side);
-      scanCtx.strokeStyle="rgba(110,190,255,.95)";
+      scanCtx.strokeStyle = strokeCol;
       scanCtx.lineWidth=Math.max(1.2,side*0.05);
+      scanCtx.setLineDash([Math.max(4,side*0.18), Math.max(3,side*0.12)]);
       scanCtx.strokeRect(-side/2,-side/2,side,side);
       scanCtx.restore();
-      var label=zoneLetter(zoneOf(idx))+"-"+fmt(idx);
+      var label=zoneLetter(zoneOf(idx))+"-"+fmt(idx)+(ip.weak?"?":"");
       scanCtx.font="bold 15px monospace";
       var tw2=scanCtx.measureText(label).width;
       scanCtx.fillStyle="rgba(8,12,18,.72)";
       scanCtx.fillRect(x-tw2/2-4, y-31, tw2+8, 18);
-      scanCtx.fillStyle="rgba(110,190,255,.95)";
+      scanCtx.fillStyle=strokeCol;
       scanCtx.textAlign="center"; scanCtx.textBaseline="middle";
       scanCtx.fillText(label, x, y-22);
     });
@@ -458,25 +468,6 @@ function drawScanGrid(){
       scanCtx.moveTo(x-6,y); scanCtx.lineTo(x+6,y);
       scanCtx.moveTo(x,y-6); scanCtx.lineTo(x,y+6);
       scanCtx.stroke();
-      // 方向针：编号文本行方向（读数 ang），箭头指向阅读方向——
-      // 拼好组的「文本平行」判据就靠它，平行针=同簇方向
-      if(mid && isFinite(r.ang)){
-        var side=readingSide(r)*k, L=side*0.5;
-        if(L>8){
-          var dx=Math.cos(r.ang), dy=Math.sin(r.ang);
-          scanCtx.lineWidth=1.8;
-          scanCtx.beginPath();
-          scanCtx.moveTo(x-dx*L, y-dy*L); scanCtx.lineTo(x+dx*L, y+dy*L);
-          scanCtx.stroke();
-          var bx=Math.PI+r.ang;                        // 箭头两翼
-          scanCtx.beginPath();
-          scanCtx.moveTo(x+dx*L, y+dy*L);
-          scanCtx.lineTo(x+dx*L+7*Math.cos(bx-0.45), y+dy*L+7*Math.sin(bx-0.45));
-          scanCtx.moveTo(x+dx*L, y+dy*L);
-          scanCtx.lineTo(x+dx*L+7*Math.cos(bx+0.45), y+dy*L+7*Math.sin(bx+0.45));
-          scanCtx.stroke();
-        }
-      }
       // 编号文字底衬（最后画，压住针线）
       var label=r.letter+"-"+r.digits;
       scanCtx.font="bold 15px monospace";
@@ -583,7 +574,7 @@ function recalcScan(){
     //   ② 接缝：与锚点连线中点的窗也是实前景（真拼合片边贴边；邻片只留凸头）
     //   ③ 片心：预测位中心窗命中 ≥0.85（凸头/地板缝不够）
     //   ④ 占位：预测位已被其他编号的读数占据 → 那是外簇的片，不推算
-    var inferred=0, inferredIdx=new Set(), inferredPos={}, misread=0;
+    var inferred=0, inferredIdx=new Set(), inferredPos={}, misread=0, weakN=0;
     function whiteHit(x,y,rx){                         // scan 坐标椭圆小窗 maskWhite 命中率
       var hit=0,tot=0;
       for(var dy=-rx;dy<=rx;dy++){
@@ -605,18 +596,31 @@ function recalcScan(){
         Sa+=p.dr*p.dr; Sc+=p.dc*p.dc; Sb+=p.dr*p.dc;
         Bx+=p.dr*p.dx; Cx+=p.dc*p.dx; By+=p.dr*p.dy; Cy+=p.dc*p.dy;
       });
+      var sides=members.map(function(i){ return readingSide(scan.ocr.map.get(i))||0; })
+        .filter(function(s){ return s>0; }).sort(function(x,y){ return x-y; });
+      var side=sides.length?sides[sides.length>>1]:0;
+      if(!side) return;
       var det=Sa*Sc-Sb*Sb;
-      if(Math.abs(det)<0.5*(Sa+Sc)) return;            // 拼合对全在一条直线上，解不出两轴
-      var Vrx=(Bx*Sc-Sb*Cx)/det, Vcx=(Sa*Cx-Sb*Bx)/det;
-      var Vry=(By*Sc-Sb*Cy)/det, Vcy=(Sa*Cy-Sb*By)/det;
+      var Vrx,Vcx,Vry,Vcy, oneAxis=null;
+      if(Math.abs(det)>=0.5*(Sa+Sc)){
+        Vrx=(Bx*Sc-Sb*Cx)/det; Vcx=(Sa*Cx-Sb*Bx)/det;
+        Vry=(By*Sc-Sb*Cy)/det; Vcy=(Sa*Cy-Sb*By)/det;
+      } else {
+        // 单方向拼合（组只沿一条线拼着）：两点只定得出一根轴，垂直那根轴的方向
+        // 本质二义 —— 两侧都可能接着有片，「有片的一侧」既可能是 +col 也可能是
+        // -col，选错编号就整体错位（85891 的 237 与 187 在几何上完全等价）。
+        // 所以只在「已知轴」上延伸，垂直方向不扩展：宁可少推，绝不推错。
+        var knownR=Sa>0;
+        var kx=knownR?(Bx/Sa):(Cx/Sc), ky=knownR?(By/Sa):(Cy/Sc);
+        if(!(Math.hypot(kx,ky)>0)) return;
+        if(knownR){ Vrx=kx; Vry=ky; Vcx=0; Vcy=0; oneAxis="row"; }
+        else { Vcx=kx; Vcy=ky; Vrx=0; Vry=0; oneAxis="col"; }
+      }
       var maxRes=0;
       gp.forEach(function(p){
         maxRes=Math.max(maxRes, Math.hypot(p.dr*Vrx+p.dc*Vcx-p.dx, p.dr*Vry+p.dc*Vcy-p.dy));
       });
-      var sides=members.map(function(i){ return readingSide(scan.ocr.map.get(i))||0; })
-        .filter(function(s){ return s>0; }).sort(function(x,y){ return x-y; });
-      var side=sides.length?sides[sides.length>>1]:0;
-      if(!side||maxRes>side*0.35) return;              // 残差过大 → 组内疑有误读，不外推
+      if(maxRes>side*0.35) return;                       // 残差过大 → 组内疑有误读，不外推
       var seed=scan.ocr.map.get(members[0]);
       var p0=idxToRC(members[0]);
       var rmin=99,rmax=0,cmin=99,cmax=0;
@@ -625,8 +629,11 @@ function recalcScan(){
         rmin=Math.min(rmin,rc.row); rmax=Math.max(rmax,rc.row);
         cmin=Math.min(cmin,rc.col); cmax=Math.max(cmax,rc.col);
       });
-      rmin=Math.max(1,rmin-2); rmax=Math.min(S.rows,rmax+2);
-      cmin=Math.max(1,cmin-2); cmax=Math.min(S.cfg.cols,cmax+2);
+      var r0min=rmin,r0max=rmax,c0min=cmin,c0max=cmax;
+      rmin=Math.max(1,rmin-3); rmax=Math.min(S.rows,rmax+3);   // ±3：蔓延能多长两圈，
+      cmin=Math.max(1,cmin-3); cmax=Math.min(S.cfg.cols,cmax+3); // 四道关 + 上限兜底防扩散
+      if(oneAxis==="row"){ cmin=c0min; cmax=c0max; }           // 垂直轴方向二义 → 不扩展
+      else if(oneAxis==="col"){ rmin=r0min; rmax=r0max; }
       var k=scan.W/scan.ocr.w, added=0;
       var rx=side*k*0.28;
       var groupSet={}, chain={};                     // 蔓延锚点：本组成员读数 / 本组已推算格
@@ -672,10 +679,10 @@ function recalcScan(){
             }
           } else {
             set.add(idx); inferredIdx.add(idx); inferred++;
-            inferredPos[idx]={x:px,y:py,ang:seed.ang,side:side};
+            inferredPos[idx]={x:px,y:py,ang:seed.ang,side:side,grp:gi,weak:false};
             chain[idx]={x:px,y:py};
             fresh++; added++;
-            if(added>12){ pass=99; break; }              // 单组外推上限，防映射意外扩散
+            if(added>16){ pass=99; break; }              // 单组外推上限，防映射意外扩散
           }
         }
         if(!fresh) break;
@@ -771,6 +778,15 @@ function recalcScan(){
         var supN=0;
         for(var z2=0;z2<cluster.length;z2++){
           var pc2=idxToRC(cluster[z2]), q2=scanCellXY(pc2);
+          // 紧贴「已对齐读数格」的推算格 = 与已确认主体直接相邻，必是真片：
+          // 光斑是隔着地板的大孤立区，不会整簇贴在主体边上（大簇靠 25% 占比照样剔除）
+          var nb4=[[pc2.row+1,pc2.col],[pc2.row-1,pc2.col],[pc2.row,pc2.col+1],[pc2.row,pc2.col-1]];
+          var nearAligned=false;
+          for(var n4=0;n4<4;n4++){
+            if(nb4[n4][0]<1||nb4[n4][1]<1||nb4[n4][0]>S.rows||nb4[n4][1]>S.cfg.cols) continue;
+            if(alignedIdx.has(rcToIdx(nb4[n4][0],nb4[n4][1]))){ nearAligned=true; break; }
+          }
+          if(nearAligned){ supN++; continue; }
           for(var w2=0;w2<arr.length;w2++){
             if(Math.hypot(arr[w2].x*k-q2.x, arr[w2].y*k-q2.y)<mp){ supN++; break; }
           }
@@ -784,10 +800,11 @@ function recalcScan(){
     scan.suspIdx=suspIdx.size?suspIdx:null;
     scan.suspPairs=suspPairs;
     scan.inferred=inferred; scan.inferredIdx=inferredIdx; scan.inferredPos=inferredPos;
+    scan.inferredWeak=weakN;
   } else {
     scan.reads=null; scan.groups=null; scan.grpMap=null;
     scan.suspIdx=null; scan.suspPairs=null;
-    scan.inferred=0; scan.inferredIdx=null; scan.inferredPos=null;
+    scan.inferred=0; scan.inferredIdx=null; scan.inferredPos=null; scan.inferredWeak=0;
     scan.blockMode=false; scan.alignedIdx=null; scan.blockAng=0;
     var rx=Math.abs(scan.pitchX)*0.26, ry=Math.abs(scan.pitchY)*0.26;
     for(var i=1;i<=S.cfg.total;i++){
@@ -862,6 +879,7 @@ function scanTipText(){
     +(scan.blockMode?" · 整块拼图":"")
     +(scan.groups&&scan.groups.length?" · 拼好组 "+scan.groups.length:"")
     +(scan.inferred?" · 拼好推算 "+scan.inferred:"")
+    +(scan.inferredWeak?(" · 待核 "+scan.inferredWeak):"")
     +(scan.suspIdx?(" · ⚠可疑 "+scan.suspIdx.size):"");
 }
 function scanCalTip(){
@@ -882,7 +900,7 @@ function resetScan(keepImg,keepOcr){
   scan.alignedIdx=null; scan.blockAng=0;
   scan.reads=null; scan.groups=null; scan.grpMap=null;
   scan.suspIdx=null; scan.suspPairs=null;
-  scan.inferred=0; scan.inferredIdx=null; scan.inferredPos=null;
+  scan.inferred=0; scan.inferredIdx=null; scan.inferredPos=null; scan.inferredWeak=0;
   scan.zoom=1; scan.ox=0; scan.oy=0;
   setScanMode("move");
   $("scanPick").classList.remove("on");
@@ -1035,6 +1053,7 @@ function autoCalibrate(okList){
   $("scanStep").innerHTML="已自动识别并标定（读取到 <b>"+okList.length+"</b> 个编号）<br>"
     +"<b>绿框</b>＝识别为已拼（随文字方向摆放） · 同色框＝<b>拼好组</b> · <b>蓝框</b>＝组内推算 · <b>红框</b>＝疑似拼错/误读<br>"
     +"顶部工具条：<b>移动照片</b>查看细节 · <b>微调网格</b>整体挪动 · <b>增删结果</b>逐格修正<br>"
+    +"<b>增删结果</b>模式下点<b>没有框的片</b>可以输入编号把它补进结果（OCR 漏读的边角块），补完自动重新分组并推算邻居<br>"
     +"<span class=\"sn\">「重新标定」= 自动重标（Shift/Alt + 点 = 手动点两块）；网格在全部编号读数里自动找最自洽的一对片对齐，换照片同样适用。相邻且编号方向一致的块自动归为拼好组；组内编号在网格上对不上时会标红提示。识别有误的编号可以直接在照片上核对；应用后可点「应用并引导摆放」逐块引导。</span>";
   return true;
 }
@@ -1096,6 +1115,28 @@ function scanToggleCell(i,del){
   if(del) scan.result.delete(i); else scan.result.add(i);
   updateScanStats(); drawScan();
 }
+/* 手动补一块：OCR 漏读的片（尤其拼在簇边、垂直方向又解不出轴向的那块），
+   由人点位置 + 输编号补成「伪读数」，之后并查集/局部网格会自动把它并进簇，
+   组内双轴由此可解，周围漏读片跟着一起推出来。 */
+function addManualReading(idx,sx,sy){
+  if(!scan.ocr||!scan.ocr.map) { toast("先载入照片完成识别"); return false; }
+  if(scan.ocr.map.has(idx)){ toast("第 "+idx+" 块已经读到了"); return false; }
+  var k=scan.W/scan.ocr.w, ox=sx/k, oy=sy/k;
+  var near=null, bd=1e9;
+  scan.ocr.map.forEach(function(r){ var d=Math.hypot(r.x-ox,r.y-oy); if(d<bd){ bd=d; near=r; } });
+  var ang=near?(near.ang||0):0;
+  var side=near?readingSide(near):0;
+  if(!side) side=Math.min(scan.ocr.w,scan.ocr.h)/18;   // 无参照读数时按照片短边粗估片宽
+  var tl=side*0.27, comps=[];
+  for(var t=-1;t<=1;t+=2){
+    comps.push({ x0:ox+Math.cos(ang)*tl*0.5*t-1, y0:oy+Math.sin(ang)*tl*0.5*t-1, w:2, h:2 });
+  }
+  scan.ocr.map.set(idx, { idx:idx, x:ox, y:oy, ang:ang, conf:1, svc:false, manual:true,
+    comps:comps, letter:zoneLetter(zoneOf(idx)), digits:fmt(idx) });
+  recalcScan();
+  toast("已补第 "+idx+" 块，重新分组完成");
+  return true;
+}
 function updateScanStats(){
   var set=scan.result||new Set(), newly=0;
   set.forEach(function(i){ if(S.states[i]!==1) newly++; });
@@ -1156,10 +1197,12 @@ $("pickZoom").parentNode.addEventListener("click",function(e){
   drawPickZoom();
 });
 
-function openPick(p,clientX,clientY){
-  scan.picking={x:p.x,y:p.y};
+function openPick(p,clientX,clientY,add){
+  scan.picking={x:p.x,y:p.y,add:!!add};
   var pr=$("scanPick");
   pr.classList.add("on");
+  var h4=pr.querySelector("h4");
+  if(h4) h4.textContent = add ? "这块拼图上印的数字（补进结果）" : "这一块上印的数字";
   var stage=$("scanStage").getBoundingClientRect();
   var left=clientX-stage.left+14, top=clientY-stage.top+14;
   if(left+290>stage.width) left=clientX-stage.left-300;
@@ -1203,6 +1246,7 @@ scanStage.addEventListener("pointerdown",function(e){
   if(scan.calibrated && scan.mode==="edit" && inside){
     var i=scanHitIdx(p.x,p.y);
     if(i!==null){ scanDrag.del=scan.result.has(i); scanDrag.last=i; scanToggleCell(i,scanDrag.del); }
+    else if(scan.ocr && scan.ocr.map.size>=2) scanDrag.addPt=p;   // 点空白片 → 补一块
   }
 });
 
@@ -1236,6 +1280,8 @@ function endScanPointer(e){
   if(!scan.calibrated){
     if(scan.anchors.length>=2){ toast("已标定两块，点「重新标定」可重来"); return; }
     if(d.inside) openPick(d.pt,e.clientX,e.clientY);   // 只有点在照片范围内才选锚点
+  } else if(d.addPt && scan.mode==="edit"){
+    openPick(d.addPt,e.clientX,e.clientY,true);        // 增删模式下点空白片 → 补编号
   }
 }
 scanStage.addEventListener("pointerup",endScanPointer);
@@ -1299,6 +1345,12 @@ $("pickOk").addEventListener("click",function(){
   if(!scan.picking) return;
   var idx=updatePickRes();
   if(!idx){ toast("请输入拼图块上印的数字（1 ~ "+S.cfg.total+"）"); return; }
+  if(scan.picking.add){                            // 「补一块」：伪读数 + 立即重算
+    var pt={x:scan.picking.x,y:scan.picking.y};
+    scan.picking=null; $("scanPick").classList.remove("on");
+    if(addManualReading(idx,pt.x,pt.y)){ drawScan(); if(scan.calibrated) scanCalTip(); }
+    return;
+  }
   scan.anchors.push({x:scan.picking.x,y:scan.picking.y,idx:idx});
   scan.picking=null; $("scanPick").classList.remove("on");
   if(scan.anchors.length===1){
