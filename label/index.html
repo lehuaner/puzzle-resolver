@@ -525,10 +525,17 @@ async function doAutoLabel(){
         }
       }
     });
-    // 未落框的编号：按平均块面积给估算旋转框，供人工校准
+    // 未落框的编号：按平均块面积给估算旋转框，供人工校准。
+    // 若位置已有人工框（该块用户已标，亮域漏检导致编号成孤儿）→ 跳过不建，
+    // 补扫的框绝不能压到已有框上
     orphans.forEach(function(r){
-      var s=avgSide;
-      fresh.push(mkPiece(mkRot(r.x*ocrK, r.y*ocrK, s, s, norm90(r.ang)), r));
+      var s=avgSide, ox4=r.x*ocrK, oy4=r.y*ocrK, cov=false;
+      for(var oi=0;oi<keep.length;oi++){
+        var ob=keep[oi].box;
+        if(Math.hypot(ob.cx-ox4,ob.cy-oy4)<Math.max(avgSide*0.5, ob.w*0.55)){ cov=true; break; }
+      }
+      if(cov) return;
+      fresh.push(mkPiece(mkRot(ox4,oy4,s,s,norm90(r.ang)), r));
     });
     // 粘连域：域内编号数少于估算块数（邻块编号被全图 OCR 漏检）→
     // 域 AABB 按 avgSide 网格切分，对离已有编号较远的格中心逐个补扫
@@ -666,24 +673,33 @@ async function doAutoLabel(){
       nn4.sort(function(a,b){ return a-b; });
       var pitch=(nn4.length>=4)?nn4[nn4.length>>1]:avgSide;
       pitch=Math.max(30,Math.min(pitch, avgSide*3));
-      // 已标块判断：距已有框 <0.45×块距即视为已覆盖（用户框偏小但框心≈块心附近）
+      // 已覆盖判定：峰点即真块心，但人工框可能偏小/偏位（偏差可达半块宽）——
+      // 判定半径取 max(0.55×最近框宽, 0.55×新框宽)，保证新框与已有框有实质
+      // 重叠时一律视为已标（补扫的框绝不压到已有框上——用户明确要求）
+      function coversExisting(x,y,wNew){
+        for(var ki8=0;ki8<allB.length;ki8++){
+          var pb=allB[ki8].box;
+          if(Math.hypot(pb.cx-x,pb.cy-y)<Math.max(pb.w*0.55, wNew*0.55)) return true;
+        }
+        return false;
+      }
       var made=0;
       for(var pi4=0;pi4<pk.length;pi4++){
         var pt2=pk[pi4];
-        var near9=1e9;
-        for(var ki7=0;ki7<allB.length;ki7++){
-          var d10=Math.hypot(allB[ki7].box.cx-pt2.x, allB[ki7].box.cy-pt2.y);
-          if(d10<near9) near9=d10;
-        }
-        if(near9<pitch*0.45) continue;   // 已有框覆盖
+        if(coversExisting(pt2.x,pt2.y,pitch*0.92)) continue;   // 已有框覆盖
         if(made>=12) break;              // 单轮兜底上限
+        var near10=1e9;
+        for(var ki9=0;ki9<allB.length;ki9++){
+          var d11=Math.hypot(allB[ki9].box.cx-pt2.x, allB[ki9].box.cy-pt2.y);
+          if(d11<near10) near10=d11;
+        }
         var b6=null;
         try{ b6=await svcOcrRoi({ box:{cx:pt2.x,cy:pt2.y,w:pitch*0.92,h:pitch*0.92,ang:0} }); }catch(err){}
         if(b6&&b6.letter){
           var lab6=b6.letter+"-"+b6.digits;
           var rep=allB.some(function(p){ return p.label===lab6; });
           // 编号写入复核：距最近框过近时读到的必是邻块编号（ROI 切入）
-          if(!rep&&near9>=pitch*0.45){
+          if(!rep&&near10>=pitch*0.45){
             rescanned++;
             allB.push({box:{cx:pt2.x,cy:pt2.y,w:pitch*0.92,h:pitch*0.92,ang:0}, label:lab6});
             fresh.push(mkPiece(mkRot(pt2.x,pt2.y,pitch*0.92,pitch*0.92,norm90(b6.angOff||0)),b6));
