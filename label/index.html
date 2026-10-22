@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>拼图标注台 · 编号 + 整块框</title>
+<style>
+:root{ --bg:#0b0f14; --panel:#121820; --line:#243040; --tx:#dce6f2; --dim:#8fa0b4;
+       --ok:#3ce678; --warn:#ffc628; --bad:#ff5f5f; --sel:#ffd45e; --auto:#50c8ff; }
+*{box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent;}
+html,body{height:100%; overflow:hidden;}
+body{background:var(--bg); color:var(--tx); font:14px/1.45 system-ui,"Segoe UI","Microsoft YaHei",sans-serif;
+     display:flex; flex-direction:column;}
+button{font:inherit; color:var(--tx); background:#1a2330; border:1px solid var(--line);
+       border-radius:8px; padding:6px 12px; cursor:pointer; white-space:nowrap;}
+button:hover{background:#232f40;}
+button:active{transform:scale(.96);}
+button.on{background:#2a3a50; border-color:#3d5273; color:#cfe4ff;}
+button.pri{background:#1d3a28; border-color:#3f7a52; color:#d8ffe6;}
+input{font:inherit; color:var(--tx); background:#0e141c; border:1px solid var(--line);
+      border-radius:8px; padding:6px 10px; outline:none;}
+input:focus{border-color:#3d6ea5;}
+/* ---- 顶栏 ---- */
+#bar{display:flex; gap:8px; align-items:center; padding:8px 10px; background:var(--panel);
+     border-bottom:1px solid var(--line); flex-wrap:wrap;}
+#bar .name{color:var(--dim); font-size:12.5px; overflow:hidden; text-overflow:ellipsis;
+           white-space:nowrap; max-width:240px;}
+#stat{color:var(--dim); font-size:12.5px;}
+#stat b{color:var(--tx);}
+/* ---- 主区 ---- */
+#main{flex:1; display:flex; min-height:0;}
+#stage{flex:1; position:relative; overflow:hidden; background:#060a10; touch-action:none;}
+#cv{position:absolute; left:50%; top:50%; transform-origin:center; cursor:crosshair;}
+#cv.pan{cursor:grab;}
+/* ---- 侧栏 ---- */
+#side{width:216px; background:var(--panel); border-left:1px solid var(--line);
+      display:flex; flex-direction:column;}
+#side .hd{padding:8px 10px; font-size:12px; color:var(--dim); border-bottom:1px solid var(--line);
+          display:flex; justify-content:space-between; align-items:center;}
+#plist{flex:1; overflow-y:auto; padding:4px;}
+.pi{display:flex; gap:6px; align-items:center; padding:6px 8px; border-radius:7px; cursor:pointer;
+    font-family:ui-monospace,Consolas,monospace; font-size:12.5px;}
+.pi:hover{background:#1a2330;}
+.pi.sel{background:#2a3a50; outline:1px solid #3d5273;}
+.pi .dot{width:8px; height:8px; border-radius:50%; flex:none;}
+.pi .lb{flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.pi .cf{color:var(--dim); font-size:11px;}
+#hint{padding:8px 10px; font-size:11.5px; color:var(--dim); border-top:1px solid var(--line); line-height:1.6;}
+/* ---- 编辑条 ---- */
+#edbar{display:none; gap:8px; align-items:center; padding:8px 10px; background:var(--panel);
+       border-top:1px solid var(--line); flex-wrap:wrap;}
+#edbar.on{display:flex;}
+#edLabel{width:130px; font-family:ui-monospace,Consolas,monospace; letter-spacing:1px; font-size:15px;}
+#edInfo{color:var(--dim); font-size:12px;}
+/* ---- 历史面板 ---- */
+#hist{display:none; position:fixed; right:12px; top:52px; width:300px; max-height:70vh; overflow:auto;
+      background:var(--panel); border:1px solid var(--line); border-radius:10px; z-index:20;
+      box-shadow:0 8px 30px rgba(0,0,0,.5);}
+#hist.on{display:block;}
+#hist .hd{padding:8px 12px; border-bottom:1px solid var(--line); font-weight:600;
+          display:flex; justify-content:space-between; align-items:center;}
+#hist .hd button{padding:2px 8px; font-size:12px;}
+.hi{display:flex; gap:8px; align-items:center; padding:8px 12px; cursor:pointer; font-size:12.5px;}
+.hi:hover{background:#1a2330;}
+.hi .nm{flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.hi .meta{color:var(--dim); font-size:11px;}
+.hi .del{color:#8a5a5a; padding:0 6px;}
+.hi .del:hover{color:var(--bad); background:transparent;}
+#toast{position:fixed; left:50%; bottom:70px; transform:translateX(-50%); background:#1c2634;
+       border:1px solid var(--line); color:var(--tx); padding:9px 16px; border-radius:10px;
+       font-size:13px; z-index:50; opacity:0; pointer-events:none; transition:opacity .2s;}
+#toast.on{opacity:1;}
+</style>
+</head>
+<body>
+
+<div id="bar">
+  <button id="bOpen">📁 打开照片</button>
+  <button id="bAuto">⚡ 自动标注</button>
+  <button id="bExport" class="pri">⬇ 导出 JSON</button>
+  <button id="bHist">🕘 历史</button>
+  <span class="name" id="phName">未打开照片</span>
+  <span id="stat"></span>
+  <span style="flex:1"></span>
+  <button id="bMode" title="切换 框选/移动">✥ 移动</button>
+  <button id="bZoomOut">−</button><button id="bZoomIn">＋</button><button id="bFit">⤢</button>
+</div>
+
+<div id="main">
+  <div id="stage"><canvas id="cv"></canvas></div>
+  <div id="side">
+    <div class="hd"><span>块列表</span><span id="pCount">0</span></div>
+    <div id="plist"></div>
+    <div id="hint">拖拽＝画新框<br>点框＝选中编辑（拖框可移动）<br>空编号的块标红，务必补齐</div>
+  </div>
+</div>
+
+<div id="edbar">
+  <span id="edInfo">块 #1</span>
+  <input id="edLabel" placeholder="如 B-287" autocomplete="off">
+  <button id="bOk" class="pri">✓ 确认</button>
+  <button id="bDel" style="color:#ffb0b0">🗑 删除框</button>
+  <span style="flex:1"></span>
+  <button id="bPrev">◀ 上一块</button><button id="bNext">下一块 ▶</button>
+</div>
+
+<div id="hist">
+  <div class="hd"><span>标注历史（本机自动保存）</span><button id="hClose">✕</button></div>
+  <div id="hlist"></div>
+</div>
+
+<div id="toast"></div>
+<input type="file" id="fImg" accept="image/*" style="display:none">
+<input type="file" id="fApply" accept="image/*" style="display:none">
+
+<script src="ocr-templates.js"></script>
+<script src="ocr-core.js"></script>
+<script>
+"use strict";
+/* ================= 拼图标注台 =================
+   单文件夹、双击即用（file://）。自动标注 = 块级连通域(1500) + 编号OCR(3072) + 落框归属；
+   人工补框/改号/确认；localStorage 按照片名自动存历史；导出合并 JSON（原图坐标 bbox）。 */
+
+var $=function(id){ return document.getElementById(id); };
+var cv=$("cv"), ctx=cv.getContext("2d");
+var PW=1500;                       // 块检测/显示工作分辨率（长边）
+var ocrK=1;                        // OCR(3072) → 工作分辨率 坐标换算
+
+var P={ img:null, name:"", ow:0, oh:0, W:0, H:0, base:null,
+        pieces:[], nextId:1, sel:-1,
+        zoom:1, ox:0, oy:0, fit:1, mode:"box", ocrW:0 };
+var histPending="";                // 历史点击后等待用户选对应照片
+
+function toast(s,long){
+  var t=$("toast"); t.textContent=s; t.classList.add("on");
+  clearTimeout(toast._t); toast._t=setTimeout(function(){ t.classList.remove("on"); }, long?4200:2200);
+}
+function normLabel(v){
+  var s=String(v||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
+  var m=s.match(/^([ABCD])(\d{1,4})$/);
+  return m ? m[1]+"-"+m[2] : null;
+}
+function fmtT(ts){
+  var d=new Date(ts);
+  function p(n){ return (n<10?"0":"")+n; }
+  return (d.getMonth()+1)+"-"+p(d.getDate())+" "+p(d.getHours())+":"+p(d.getMinutes());
+}
+
+/* ================= 照片载入 ================= */
+$("bOpen").addEventListener("click",function(){ $("fImg").click(); });
+$("fImg").addEventListener("change",function(e){
+  var f=e.target.files&&e.target.files[0]; if(!f) return;
+  openPhoto(f); e.target.value="";
+});
+var stage=$("stage");
+stage.addEventListener("dragover",function(e){ e.preventDefault(); });
+stage.addEventListener("drop",function(e){
+  e.preventDefault();
+  var f=e.dataTransfer.files&&e.dataTransfer.files[0];
+  if(f&&/^image\//.test(f.type)) openPhoto(f);
+});
+
+function openPhoto(file){
+  var url=URL.createObjectURL(file);
+  var img=new Image();
+  img.onload=function(){
+    URL.revokeObjectURL(url);
+    P.img=img; P.name=file.name; P.ow=img.width; P.oh=img.height;
+    var sc=Math.min(1, PW/Math.max(img.width,img.height));
+    P.W=Math.round(img.width*sc); P.H=Math.round(img.height*sc);
+    var pc=document.createElement("canvas");
+    pc.width=P.W; pc.height=P.H;
+    pc.getContext("2d").drawImage(img,0,0,P.W,P.H);
+    P.base=pc;
+    ocrK=P.W/Math.round(img.width*Math.min(1,3072/Math.max(img.width,img.height)));
+    var saved=loadLocal(P.name);
+    P.pieces=[]; P.nextId=1; P.sel=-1;
+    fitView();
+    if(saved){ applyData(saved); toast("已恢复历史标注 "+saved.pieces.length+" 块"); renderAll(); }
+    else { renderAll(); autoLabel(); }
+  };
+  img.onerror=function(){ toast("图片加载失败"); };
+  img.src=url;
+  histPending="";
+}
+
+/* ================= 块级连通域（亮前景） ================= */
+function pieceBoxes(){
+  var c2=document.createElement("canvas");
+  c2.width=P.W; c2.height=P.H;
+  var cx=c2.getContext("2d",{willReadFrequently:true});
+  cx.drawImage(P.img,0,0,P.W,P.H);
+  var d=cx.getImageData(0,0,P.W,P.H).data;
+  var w=P.W,h=P.H,n=w*h,gray=new Uint8Array(n);
+  for(var i=0,p=0;i<n;i++,p+=4) gray[i]=(d[p]*.299+d[p+1]*.587+d[p+2]*.114)|0;
+  var hist=new Array(256).fill(0);
+  for(i=0;i<n;i++) hist[gray[i]]++;
+  var thr=otsuOf(hist,n);
+  var fg=new Uint8Array(n);
+  for(i=0;i<n;i++) fg[i]=gray[i]>thr?1:0;
+  var label=new Int32Array(n), stack=new Int32Array(n), boxes=[];
+  var cur=0;
+  for(var s=0;s<n;s++){
+    if(!fg[s]||label[s]) continue;
+    cur++; var top=0; stack[top++]=s; label[s]=cur;
+    var cnt=0,x0=w,x1=0,y0=h,y1=0;
+    while(top>0){
+      var q=stack[--top]; cnt++;
+      var qx=q%w,qy=(q/w)|0;
+      if(qx<x0)x0=qx; if(qx>x1)x1=qx; if(qy<y0)y0=qy; if(qy>y1)y1=qy;
+      if(qx>0){var a=q-1; if(fg[a]&&!label[a]){label[a]=cur;stack[top++]=a;}}
+      if(qx<w-1){var b=q+1; if(fg[b]&&!label[b]){label[b]=cur;stack[top++]=b;}}
+      if(qy>0){var c3=q-w; if(fg[c3]&&!label[c3]){label[c3]=cur;stack[top++]=c3;}}
+      if(qy<h-1){var e3=q+w; if(fg[e3]&&!label[e3]){label[e3]=cur;stack[top++]=e3;}}
+    }
+    var bw=x1-x0+1,bh=y1-y0+1;
+    if(cnt>n*0.008 && bw>w*0.08 && bh>h*0.08 && cnt<n*0.75) boxes.push({bbox:[x0,y0,bw,bh], cnt:cnt});
+  }
+  return boxes;
+}
+
+/* ================= 自动标注 ================= */
+function autoLabel(){
+  if(!P.img){ toast("先打开照片"); return; }
+  toast("正在自动标注…",true);
+  setTimeout(function(){
+    var boxes;
+    try{ boxes=pieceBoxes(); }catch(err){ toast("块检测失败："+err.message); return; }
+    var results=[];
+    try{ results=detectNumbers(P.img)||[]; }catch(err){ results=[]; }
+    // 质量过滤：编号至少 4 组件（字母+dash+2 数字）且 conf 达标，滤掉背景纹理误检
+    results=results.filter(function(r){ return r.n>=4 && r.conf>=0.45; });
+    // 编号（OCR 3072 坐标 → 工作分辨率）→ 块归属
+    var n=P.W*P.H;
+    var byBox=boxes.map(function(){ return []; });
+    var orphans=[];
+    results.forEach(function(r){
+      var x=r.x*ocrK, y=r.y*ocrK, hit=-1;
+      for(var b=0;b<boxes.length;b++){
+        var bb=boxes[b].bbox, pad=Math.max(bb[2],bb[3])*0.12;
+        if(x>=bb[0]-pad&&x<=bb[0]+bb[2]+pad&&y>=bb[1]-pad&&y<=bb[1]+bb[3]+pad){ hit=b; break; }
+      }
+      if(hit<0) orphans.push(r); else byBox[hit].push(r);
+    });
+    // 小块平均边长（供孤儿编号估框）
+    var avgSide=0, smalls=boxes.filter(function(bx){ return bx.cnt<n*0.15; });
+    if(smalls.length){
+      smalls.forEach(function(bx){ avgSide+=Math.sqrt(bx.cnt); });
+      avgSide/=smalls.length;
+    } else avgSide=P.W*0.1;
+    var fresh=[];
+    function mkPiece(bbox,r){
+      return { id:P.nextId++, bbox:bbox, label:r?r.letter+"-"+r.digits:"",
+               conf:r?r.conf:0, src:"auto" };
+    }
+    boxes.forEach(function(bx,b){
+      if(keepBoxesOverlap(bx.bbox)) return;      // 与人工框重叠的自动域跳过
+      var rs=byBox[b];
+      if(rs.length>=2){
+        // 域含多个编号（块相邻粘连/堆叠）：按编号位置+均摊块面积拆方框
+        var s=Math.sqrt(bx.cnt/rs.length);
+        rs.forEach(function(r){
+          fresh.push(mkPiece([r.x*ocrK-s/2, r.y*ocrK-s/2, s, s], r));
+        });
+      } else {
+        fresh.push(mkPiece(bx.bbox.slice(), rs[0]||null));
+      }
+    });
+    // 未落框的编号：按平均块面积给估算框，供人工校准
+    orphans.forEach(function(r){
+      var s=avgSide;
+      fresh.push(mkPiece([r.x*ocrK-s/2, r.y*ocrK-s/2, s, s], r));
+    });
+    // 已有人工确认的块保留不动
+    var keep=P.pieces.filter(function(p){ return p.src==="manual"; });
+    P.pieces=keep.concat(fresh);
+    renderAll();
+    var numd=fresh.filter(function(p){ return p.label; }).length;
+    toast("自动标注："+fresh.length+" 块，读出编号 "+numd+" 个",true);
+  },30);
+}
+function keepBoxesOverlap(bb){
+  return P.pieces.some(function(p){
+    if(p.src!=="manual") return false;
+    var kb=p.bbox;
+    return !(bb[0]>kb[0]+kb[2]||bb[0]+bb[2]<kb[0]||bb[1]>kb[1]+kb[3]||bb[1]+bb[3]<kb[1]);
+  });
+}
+$("bAuto").addEventListener("click",autoLabel);
+
+/* ================= 视图 ================= */
+function fitView(){
+  var W=stage.clientWidth-16, H=stage.clientHeight-16;
+  if(W<40||H<40) return;
+  P.fit=Math.min(W/P.W,H/P.H,1.6);
+  P.zoom=1; P.ox=0; P.oy=0;
+  layout();
+}
+function layout(){
+  // 仅在尺寸变化时赋值：重复赋同值也会清空 canvas 内容
+  if(cv.width!==P.W) cv.width=P.W;
+  if(cv.height!==P.H) cv.height=P.H;
+  var s=P.fit*P.zoom;
+  cv.style.width=Math.round(P.W*s)+"px";
+  cv.style.height=Math.round(P.H*s)+"px";
+  cv.style.transform="translate(calc(-50% + "+Math.round(P.ox)+"px), calc(-50% + "+Math.round(P.oy)+"px))";
+}
+function zoomAt(cx,cy,nz){
+  nz=Math.max(0.3,Math.min(12,nz));
+  var r=cv.getBoundingClientRect();
+  var px=(cx-r.left)/r.width, py=(cy-r.top)/r.height;
+  var k=nz/P.zoom;
+  P.ox=px*r.width - (px*r.width-P.ox)*k;
+  P.oy=py*r.height - (py*r.height-P.oy)*k;
+  P.zoom=nz; layout();
+}
+$("bZoomIn").addEventListener("click",function(){ zoomAt(stage.clientWidth/2+stage.getBoundingClientRect().left, stage.clientHeight/2+stage.getBoundingClientRect().top, P.zoom*1.3); });
+$("bZoomOut").addEventListener("click",function(){ zoomAt(stage.clientWidth/2+stage.getBoundingClientRect().left, stage.clientHeight/2+stage.getBoundingClientRect().top, P.zoom/1.3); });
+$("bFit").addEventListener("click",fitView);
+window.addEventListener("resize",function(){ if(P.img){ fitView(); } });
+stage.addEventListener("wheel",function(e){
+  if(!P.img) return;
+  e.preventDefault();
+  zoomAt(e.clientX,e.clientY,P.zoom*Math.exp(-e.deltaY*0.0016));
+},{passive:false});
+
+$("bMode").addEventListener("click",function(){
+  P.mode=P.mode==="box"?"pan":"box";
+  $("bMode").textContent=P.mode==="box"?"✥ 移动":"▣ 框选";
+  $("bMode").classList.toggle("on",P.mode==="pan");
+  cv.className=P.mode==="pan"?"pan":"";
+});
+
+/* ================= 绘制 ================= */
+function boxColor(p,sel){
+  if(sel) return "rgba(255,212,94,1)";
+  if(p.src==="manual") return "rgba(60,230,120,.95)";
+  if(!p.label) return "rgba(255,95,95,.9)";
+  if(p.conf<0.6) return "rgba(255,198,40,.95)";
+  return "rgba(80,200,255,.9)";
+}
+function renderAll(){
+  if(!P.base) { ctx.clearRect(0,0,cv.width,cv.height); return; }
+  ctx.clearRect(0,0,P.W,P.H);
+  ctx.drawImage(P.base,0,0);
+  P.pieces.forEach(function(p,i){ drawPiece(p,i,false); });
+  if(P.sel>=0&&P.pieces[P.sel]) drawPiece(P.pieces[P.sel],P.sel,true);
+  if(drag&&drag.drawing){
+    ctx.strokeStyle="rgba(255,212,94,.9)"; ctx.lineWidth=Math.max(1.5,P.W/700);
+    ctx.setLineDash([8,6]);
+    ctx.strokeRect(drag.x0,drag.y0,drag.x1-drag.x0,drag.y1-drag.y0);
+    ctx.setLineDash([]);
+  }
+  updateSide(); updateStat();
+}
+function drawPiece(p,i,sel){
+  var b=p.bbox, col=boxColor(p,sel);
+  ctx.strokeStyle=col;
+  ctx.lineWidth=sel?Math.max(3,P.W/400):Math.max(1.6,P.W/800);
+  if(sel){ ctx.shadowColor="rgba(255,212,94,.8)"; ctx.shadowBlur=10; }
+  ctx.strokeRect(b[0],b[1],b[2],b[3]);
+  ctx.shadowBlur=0;
+  // 标签：左上角 序号 + 编号
+  var txt="#"+(i+1)+"  "+(p.label||"? ? ?");
+  var fs=Math.max(13,Math.min(26,P.W/60));
+  ctx.font="bold "+fs+"px ui-monospace,Consolas,monospace";
+  var tw=ctx.measureText(txt).width;
+  var ly=Math.max(fs+4,b[1]-6);
+  ctx.fillStyle="rgba(6,10,16,.78)";
+  ctx.fillRect(b[0]-1,ly-fs-4,tw+14,fs+8);
+  ctx.fillStyle=col;
+  ctx.textBaseline="alphabetic"; ctx.textAlign="left";
+  ctx.fillText(txt,b[0]+6,ly-2);
+  // 人工确认小勾
+  if(p.src==="manual"&&!sel){
+    ctx.fillStyle="rgba(60,230,120,.95)";
+    ctx.font="bold "+(fs*0.8)+"px system-ui";
+    ctx.fillText("✓",b[0]+b[2]-fs*1.2,b[1]+fs);
+  }
+}
+function updateStat(){
+  var tot=P.pieces.length, man=0, empty=0;
+  P.pieces.forEach(function(p){ if(p.src==="manual")man++; if(!p.label)empty++; });
+  $("stat").innerHTML="共 <b>"+tot+"</b> 块 · 已确认 <b>"+man+"</b> · 缺编号 <b"+(empty?' style="color:var(--bad)"':"")+">"+empty+"</b>";
+  $("phName").textContent=P.name||"未打开照片";
+}
+function updateSide(){
+  $("pCount").textContent=P.pieces.length;
+  var html="";
+  P.pieces.forEach(function(p,i){
+    var c=boxColor(p,i===P.sel);
+    html+='<div class="pi'+(i===P.sel?" sel":"")+'" data-k="'+i+'">'
+      +'<span class="dot" style="background:'+(p.label?(p.src==="manual"?"var(--ok)":"var(--auto)"):"var(--bad)")+'"></span>'
+      +'<span class="lb" style="color:'+(i===P.sel?"var(--sel)":"var(--tx)")+'">'+(p.label||"（缺编号）")+'</span>'
+      +'<span class="cf">'+(p.conf?(p.conf*100|0)+"%":"")+'</span></div>';
+  });
+  $("plist").innerHTML=html;
+}
+$("plist").addEventListener("click",function(e){
+  var el=e.target.closest?e.target.closest(".pi"):null; if(!el) return;
+  selectPiece(parseInt(el.dataset.k,10));
+});
+
+/* ================= 选择与编辑 ================= */
+function selectPiece(i){
+  P.sel=(i>=0&&i<P.pieces.length)?i:-1;
+  renderAll();
+  if(P.sel>=0){
+    $("edbar").classList.add("on");
+    $("edInfo").textContent="块 #"+(P.sel+1)+(P.pieces[P.sel].conf?" · 自动 conf "+(P.pieces[P.sel].conf*100|0)+"%":"");
+    $("edLabel").value=P.pieces[P.sel].label;
+    setTimeout(function(){ $("edLabel").focus(); $("edLabel").select(); },40);
+  } else $("edbar").classList.remove("on");
+}
+function commitLabel(ok){
+  if(P.sel<0) return;
+  var p=P.pieces[P.sel];
+  if(ok){
+    var nl=normLabel($("edLabel").value);
+    if(!nl){ toast("编号格式：字母 A-D + 数字，如 B-287"); $("edLabel").focus(); return; }
+    p.label=nl; p.src="manual"; p.conf=1;
+  }
+  selectPiece(ok?nextEmpty(P.sel+1):P.sel);
+  saveSoon(); renderAll();
+}
+function nextEmpty(from){
+  for(var d=0;d<P.pieces.length;d++){
+    var i=(from+d)%P.pieces.length;
+    if(P.pieces[i].src!=="manual"||!P.pieces[i].label) return i;
+  }
+  return Math.min(from,P.pieces.length-1);
+}
+$("bOk").addEventListener("click",function(){ commitLabel(true); });
+$("edLabel").addEventListener("keydown",function(e){
+  if(e.key==="Enter") commitLabel(true);
+});
+$("bDel").addEventListener("click",function(){
+  if(P.sel<0) return;
+  P.pieces.splice(P.sel,1);
+  selectPiece(-1); saveSoon(); renderAll();
+});
+$("bPrev").addEventListener("click",function(){ if(P.pieces.length) selectPiece((P.sel-1+P.pieces.length)%P.pieces.length); });
+$("bNext").addEventListener("click",function(){ if(P.pieces.length) selectPiece((P.sel+1)%P.pieces.length); });
+
+/* ================= 指针交互：画框 / 移动框 / 平移 ================= */
+var drag=null;
+function toWork(e){
+  var r=cv.getBoundingClientRect();
+  return { x:(e.clientX-r.left)*P.W/r.width, y:(e.clientY-r.top)*P.H/r.height };
+}
+function hitPiece(x,y){
+  for(var i=P.pieces.length-1;i>=0;i--){
+    var b=P.pieces[i].bbox;
+    if(x>=b[0]&&x<=b[0]+b[2]&&y>=b[1]&&y<=b[1]+b[3]) return i;
+  }
+  return -1;
+}
+cv.addEventListener("pointerdown",function(e){
+  if(!P.img) return;
+  e.preventDefault();
+  try{ cv.setPointerCapture(e.pointerId); }catch(err){}
+  var w=toWork(e);
+  if(P.mode==="pan"||e.button===1){
+    drag={ kind:"pan", sx:e.clientX, sy:e.clientY, ox:P.ox, oy:P.oy };
+    return;
+  }
+  var hit=hitPiece(w.x,w.y);
+  if(hit>=0&&hit!==P.sel){ selectPiece(hit); drag={ kind:"move", id:P.pieces[hit].id, sx:w.x, sy:w.y, bb:P.pieces[hit].bbox.slice(), moved:false }; return; }
+  if(hit>=0&&hit===P.sel){ drag={ kind:"move", id:P.pieces[hit].id, sx:w.x, sy:w.y, bb:P.pieces[hit].bbox.slice(), moved:false }; return; }
+  drag={ kind:"draw", x0:w.x, y0:w.y, x1:w.x, y1:w.y, drawing:false };
+});
+cv.addEventListener("pointermove",function(e){
+  if(!drag) return;
+  if(drag.kind==="pan"){
+    P.ox=drag.ox+(e.clientX-drag.sx); P.oy=drag.oy+(e.clientY-drag.sy); layout(); return;
+  }
+  var w=toWork(e);
+  if(drag.kind==="move"){
+    var p=P.pieces.find(function(q){ return q.id===drag.id; }); if(!p) return;
+    var dx=w.x-drag.sx, dy=w.y-drag.sy;
+    if(Math.abs(dx)>3||Math.abs(dy)>3) drag.moved=true;
+    p.bbox=[drag.bb[0]+dx,drag.bb[1]+dy,drag.bb[2],drag.bb[3]];
+    p.src="manual";
+    renderAll();
+  } else {
+    drag.x1=w.x; drag.y1=w.y;
+    if(Math.abs(drag.x1-drag.x0)>6||Math.abs(drag.y1-drag.y0)>6) drag.drawing=true;
+    renderAll();
+  }
+});
+function endDrag(e){
+  if(!drag) return;
+  var d=drag; drag=null;
+  if(d.kind==="draw"&&d.drawing){
+    var b=[Math.min(d.x0,d.x1),Math.min(d.y0,d.y1),Math.abs(d.x1-d.x0),Math.abs(d.y1-d.y0)];
+    if(b[2]>P.W*0.03&&b[3]>P.H*0.03){
+      P.pieces.push({ id:P.nextId++, bbox:b, label:"", conf:0, src:"manual" });
+      saveSoon(); renderAll();
+      selectPiece(P.pieces.length-1);
+    }
+  } else if(d.kind==="move"&&d.moved){
+    saveSoon(); renderAll();
+  }
+}
+cv.addEventListener("pointerup",endDrag);
+cv.addEventListener("pointercancel",function(){ drag=null; });
+
+/* ================= 历史（localStorage） ================= */
+var LS="plabel:";
+function origBBox(b){                     // 工作分辨率 → 原图像素
+  var k=P.ow/P.W;
+  return [Math.round(b[0]*k),Math.round(b[1]*k),Math.round(b[2]*k),Math.round(b[3]*k)];
+}
+function workBBox(b){                     // 原图像素 → 工作分辨率
+  var k=P.W/P.ow;
+  return [Math.round(b[0]*k),Math.round(b[1]*k),Math.round(b[2]*k),Math.round(b[3]*k)];
+}
+function dataNow(){
+  return { photo:P.name, width:P.ow, height:P.oh, updated:Date.now(),
+    pieces:P.pieces.map(function(p){
+      return { bbox:origBBox(p.bbox), label:p.label, conf:Math.round(p.conf*100)/100, src:p.src };
+    }) };
+}
+function applyData(d){
+  P.ow=d.width||P.ow; P.oh=d.height||P.oh;
+  P.pieces=(d.pieces||[]).map(function(p){
+    return { id:P.nextId++, bbox:workBBox(p.bbox), label:p.label||"",
+             conf:p.conf||0, src:p.src||"auto" };
+  });
+  P.sel=-1; $("edbar").classList.remove("on");
+}
+var saveT=null;
+function saveSoon(){
+  clearTimeout(saveT);
+  saveT=setTimeout(function(){
+    if(P.name&&P.pieces.length) localStorage.setItem(LS+P.name, JSON.stringify(dataNow()));
+  },600);
+}
+function loadLocal(name){
+  var s=localStorage.getItem(LS+name);
+  if(!s) return null;
+  try{ return JSON.parse(s); }catch(err){ return null; }
+}
+$("bHist").addEventListener("click",function(){ renderHist(); $("hist").classList.add("on"); });
+$("hClose").addEventListener("click",function(){ $("hist").classList.remove("on"); });
+function renderHist(){
+  var rows=[];
+  for(var i=0;i<localStorage.length;i++){
+    var k=localStorage.key(i);
+    if(k&&k.indexOf(LS)===0){
+      try{
+        var d=JSON.parse(localStorage.getItem(k));
+        var man=0,emp=0;
+        (d.pieces||[]).forEach(function(p){ if(p.src==="manual")man++; if(!p.label)emp++; });
+        rows.push({ name:k.slice(LS.length), d:d, man:man, emp:emp });
+      }catch(err){}
+    }
+  }
+  rows.sort(function(a,b){ return b.d.updated-a.d.updated; });
+  $("hlist").innerHTML=rows.length?rows.map(function(r,idx){
+    return '<div class="hi" data-k="'+r.name+'"><span class="nm">'+r.name+'</span>'
+      +'<span class="meta">'+r.d.pieces.length+'块 ✓'+r.man+(r.emp?' <span style="color:var(--bad)">缺'+r.emp+'</span>':'')+' · '+fmtT(r.d.updated)+'</span>'
+      +'<button class="del" data-del="'+r.name+'">🗑</button></div>';
+  }).join(""):'<div class="hi"><span class="meta">暂无历史</span></div>';
+}
+$("hlist").addEventListener("click",function(e){
+  var del=e.target.dataset&&e.target.dataset.del;
+  if(del){
+    if(confirm("删除 "+del+" 的本地标注历史？")){ localStorage.removeItem(LS+del); renderHist(); }
+    return;
+  }
+  var el=e.target.closest?e.target.closest(".hi"):null; if(!el||!el.dataset.k) return;
+  var name=el.dataset.k;
+  var d=loadLocal(name);
+  if(!d){ toast("历史数据损坏"); return; }
+  if(P.name===name){ applyData(d); renderAll(); $("hist").classList.remove("on"); toast("已载入 "+d.pieces.length+" 块"); }
+  else{
+    histPending=name;
+    $("hist").classList.remove("on");
+    toast("请选择照片文件："+name,true);
+    $("fApply").click();
+  }
+});
+$("fApply").addEventListener("change",function(e){
+  var f=e.target.files&&e.target.files[0]; e.target.value="";
+  if(!f||!histPending) return;
+  if(f.name!==histPending){ toast("选的是 "+f.name+"，需要 "+histPending,true); return; }
+  var d=loadLocal(histPending); if(!d){ toast("历史数据损坏"); return; }
+  var keep=histPending; histPending="";
+  // 走 openPhoto 流程，但跳过 autoLabel、直接应用 d
+  var url=URL.createObjectURL(f);
+  var img=new Image();
+  img.onload=function(){
+    URL.revokeObjectURL(url);
+    P.img=img; P.name=keep; P.ow=img.width; P.oh=img.height;
+    var sc=Math.min(1,PW/Math.max(img.width,img.height));
+    P.W=Math.round(img.width*sc); P.H=Math.round(img.height*sc);
+    var pc=document.createElement("canvas");
+    pc.width=P.W; pc.height=P.H;
+    pc.getContext("2d").drawImage(img,0,0,P.W,P.H);
+    P.base=pc;
+    ocrK=P.W/Math.round(img.width*Math.min(1,3072/Math.max(img.width,img.height)));
+    P.pieces=[]; P.nextId=1;
+    applyData(d);
+    renderAll(); fitView();
+    toast("已载入历史标注 "+P.pieces.length+" 块");
+  };
+  img.onerror=function(){ toast("图片加载失败"); };
+  img.src=url;
+});
+
+/* ================= 导出 ================= */
+$("bExport").addEventListener("click",function(){
+  if(P.name&&P.pieces.length) localStorage.setItem(LS+P.name, JSON.stringify(dataNow()));
+  var out={ version:1, exported:new Date().toISOString(), photos:{} };
+  for(var i=0;i<localStorage.length;i++){
+    var k=localStorage.key(i);
+    if(k&&k.indexOf(LS)===0){
+      try{ var d=JSON.parse(localStorage.getItem(k)); out.photos[k.slice(LS.length)]=d; }catch(err){}
+    }
+  }
+  var n=Object.keys(out.photos).length;
+  if(!n){ toast("还没有可导出的标注"); return; }
+  var blob=new Blob([JSON.stringify(out,null,1)],{type:"application/json"});
+  var a=document.createElement("a");
+  var t=new Date();
+  a.download="labels-"+t.getFullYear()+(t.getMonth()+1<10?"0":"")+(t.getMonth()+1)
+    +(t.getDate()<10?"0":"")+t.getDate()+"-"+(t.getHours()<10?"0":"")+t.getHours()+(t.getMinutes()<10?"0":"")+t.getMinutes()+".json";
+  a.href=URL.createObjectURL(blob);
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); },3000);
+  toast("已导出 "+n+" 张照片的标注");
+});
+
+/* ================= 启动 ================= */
+document.addEventListener("keydown",function(e){
+  if(document.activeElement===$("edLabel")) return;
+  if(e.key==="Escape"){ selectPiece(-1); $("hist").classList.remove("on"); }
+  if(e.key==="Delete"||e.key==="Backspace"){
+    if(P.sel>=0){ P.pieces.splice(P.sel,1); selectPiece(-1); saveSoon(); renderAll(); }
+  }
+});
+</script>
+</body>
+</html>
