@@ -15,6 +15,7 @@ SEED = {0: (('B', 'T'), 'B363'), 1: (('B', 'T'), 'B339'), 2: (('B', 'T'), 'B340'
 info = {c['id']: c for c in cands}
 LETTERS = list('ABCD')
 DIGITS = [str(x) for x in range(10)]
+HYP = {'F+': ('F', 'F'), 'B+': ('B', 'T'), 'R+': ('B', 'F'), 'F-': ('F', 'T')}
 
 _gcache = {}
 def glyphs(cid):
@@ -63,7 +64,6 @@ def score_reading(reading, n, by_cls, exclude_id=None):
 
 def assign_all(by_cls, direction, frozen, margin_min):
     chg = 0
-    HYP = {'F+': ('F', 'F'), 'B+': ('B', 'T'), 'R+': ('B', 'F'), 'F-': ('F', 'T')}
     for cid in info:
         lab = labels.get(str(cid))
         if not lab or lab[0] == '?' or len(info[cid]['comps']) < 4 or cid in frozen: continue
@@ -71,7 +71,18 @@ def assign_all(by_cls, direction, frozen, margin_min):
         A = glyphs(cid)
         hyps = [('F+', list(A)), ('B+', [flip(b) for b in A[::-1]]),
                 ('R+', list(reversed(A))), ('F-', [flip(b) for b in A])]
-        scored = sorted((score_reading(r, n, by_cls, cid), nm) for nm, r in hyps)
+        # dash 位置硬判 order：n=5 组 dash 必在 reading[1]（正序 p=1 / 倒序 p=n-2）
+        comps = info[cid]['comps']
+        hs = sorted(c['h'] for c in comps)
+        med = hs[len(hs) // 2]
+        dpos = [i for i, c in enumerate(comps) if c['h'] < med * 0.4]
+        if n == 5 and len(dpos) == 1 and dpos[0] in (1, n - 2):
+            order = 'F' if dpos[0] == 1 else 'B'
+            names = ['F+', 'F-'] if order == 'F' else ['B+', 'R+']
+        else:
+            names = ['F+', 'B+', 'R+', 'F-']
+        nh = dict(hyps)
+        scored = sorted((score_reading(nh[nm], n, by_cls, cid), nm) for nm in names)
         if scored[1][0] - scored[0][0] < margin_min: continue
         nd = HYP[scored[0][1]]
         if cid in direction and direction[cid] != nd: chg += 1
@@ -133,10 +144,10 @@ for cls in sorted(by_cls):
     lst = by_cls[cls]
     sel, seen = [], []
     for cid, b in lst:
-        if any(l1(b, sb) < 200 for sb in seen): continue
+        if any(l1(b, sb) < 150 for sb in seen): continue
         seen.append(b); sel.append(b)
-        if len(sel) >= 8: break
-    if len(sel) < 2: sel = [b for _, b in lst[:8]]
+        if len(sel) >= 20: break
+    if len(sel) < 2: sel = [b for _, b in lst[:20]]
     out[cls] = sel
 print('模板类:', {k: len(v) for k, v in sorted(out.items())})
 

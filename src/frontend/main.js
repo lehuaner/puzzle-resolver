@@ -7,8 +7,11 @@ import { buildBoard, renderZones, updateStats, initMinimap, applyPan, placeMinim
 import { doUndo, exitBatch } from "./interact.js";
 import { closeSearch } from "./search.js";
 import { cancelPick, drawScan } from "./scan.js";
+import { detectNumbers } from "./ocr.js";
 import "./settings.js";   // 无导出：仅注册设置面板的交互
 import { wsUrl, connectWS, setLocalMode, bootView } from "./sync.js";
+
+window.__ocr = detectNumbers;   // 调试/E2E 钩子
 
 /* ================= 键盘 ================= */
 document.addEventListener("keydown",function(e){
