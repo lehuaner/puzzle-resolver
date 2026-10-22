@@ -951,12 +951,24 @@ async function persistPhoto(name){
 /* ================= 启动 ================= */
 restoreDir();
 document.addEventListener("keydown",function(e){
-  if(document.activeElement===$("edLabel")) return;
+  var ae=document.activeElement;
+  var inEd=(ae===$("edLabel")||ae===$("edDeg"));
   if(e.key==="Escape"){ selectPiece(-1); $("hist").classList.remove("on"); }
-  if(e.key==="Delete"||e.key==="Backspace"){
-    if(P.sel>=0){ P.pieces.splice(P.sel,1); selectPiece(-1); saveSoon(); renderAll(); }
+  // Del 键任何情况都删选中框（输入框聚焦时也生效，forward-delete 编辑场景少）；
+  // Backspace 只在非输入焦点时删框，输入框内保持删字符
+  if(e.key==="Delete"){
+    if(P.sel>=0){ e.preventDefault(); delSelected(); }
+  } else if(e.key==="Backspace"){
+    if(!inEd && P.sel>=0){ e.preventDefault(); delSelected(); }
   }
 });
+function delSelected(){
+  var n=P.sel+1;
+  P.pieces.splice(P.sel,1);
+  selectPiece(-1);
+  saveSoon();
+  toast("已删除块 #"+n);
+}
 </script>
 </body>
 </html>
