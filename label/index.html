@@ -80,6 +80,10 @@ input:focus{border-color:#3d6ea5;}
 #peek.on{display:block;}
 #peek canvas{display:block; border-radius:6px; background:#060a10;}
 #peekInfo{font:12px ui-monospace,Consolas,monospace; color:var(--sel); text-align:center; padding-top:4px;}
+/* ---- 模式水印（移动模式提示） ---- */
+#modeHint{display:none; position:absolute; top:10px; left:50%; transform:translateX(-50%);
+          background:rgba(42,58,80,.92); border:1px solid #3d5273; color:#cfe4ff;
+          padding:5px 14px; border-radius:16px; font-size:12px; z-index:14; pointer-events:none;}
 </style>
 </head>
 <body>
@@ -101,6 +105,7 @@ input:focus{border-color:#3d6ea5;}
 
 <div id="main">
   <div id="stage"><canvas id="cv"></canvas>
+    <div id="modeHint">✥ 移动视图模式 —— 拖动平移照片 · 点击拼图块仍可选中编辑</div>
     <div id="peek"><canvas id="peekCv" width="236" height="236"></canvas><div id="peekInfo">—</div></div>
   </div>
   <div id="side">
@@ -378,7 +383,14 @@ $("bMode").addEventListener("click",function(){
   $("bMode").textContent=P.mode==="box"?"✥ 移动":"▣ 框选";
   $("bMode").classList.toggle("on",P.mode==="pan");
   cv.className=P.mode==="pan"?"pan":"";
+  updateModeHint();
 });
+// 模式水印：移动模式下常驻提示，避免"点了没反应"的困惑
+function updateModeHint(){
+  var h=$("modeHint");
+  if(!h) return;
+  h.style.display=(P.mode==="pan"&&P.img)?"block":"none";
+}
 
 /* ================= 绘制 ================= */
 function boxColor(p,sel){
@@ -389,13 +401,14 @@ function boxColor(p,sel){
   return "rgba(80,200,255,.9)";
 }
 function renderAll(){
-  if(!P.base) { ctx.clearRect(0,0,cv.width,cv.height); return; }
+  if(!P.base) { ctx.clearRect(0,0,cv.width,cv.height); updateModeHint(); return; }
   ctx.clearRect(0,0,P.W,P.H);
   ctx.drawImage(P.base,0,0);
   var anySel=P.sel>=0&&!!P.pieces[P.sel];
   P.pieces.forEach(function(p,i){ drawPiece(p,i,false,anySel); });
   if(anySel){ drawPiece(P.pieces[P.sel],P.sel,true,false); updatePeek(P.pieces[P.sel]); }
   else $("peek").classList.remove("on");
+  updateModeHint();
   if(drag&&drag.drawing){
     // 拖拽显示为对角线（两端点），松手自动成旋转矩形
     ctx.strokeStyle="rgba(255,212,94,.95)"; ctx.lineWidth=Math.max(2,P.W/600);
@@ -683,6 +696,14 @@ cv.addEventListener("pointermove",function(e){
 function endDrag(e){
   if(!drag) return;
   var d=drag; drag=null;
+  if(d.kind==="pan"){
+    // 移动模式下几乎无位移的"点击"仍可选中框：拖动=平移视图，点框=查看/编辑
+    if(P.img && Math.hypot(e.clientX-d.sx, e.clientY-d.sy)<5){
+      var pw=toWork(e), phit=hitPiece(pw.x,pw.y);
+      if(phit>=0) selectPiece(phit);
+    }
+    return;
+  }
   if(d.kind==="draw"&&d.drawing){
     var nb=diagBox(d.x0,d.y0,d.x1,d.y1);
     if(nb){
@@ -692,6 +713,9 @@ function endDrag(e){
       selectPiece(P.pieces.length-1);
       toast("已生成矩形，正在识别框内编号…");
       setTimeout(function(){ localOCR(np); },30);
+    } else {
+      // 太短被当误触丢弃：必须给反馈，否则用户不知道为什么没有框
+      toast("对角线太短（不足照片宽 4%），放大后再画", true);
     }
   } else if((d.kind==="move"&&d.moved)||d.kind==="rot"||d.kind==="scale"){
     saveSoon(); renderAll();
