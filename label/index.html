@@ -95,6 +95,9 @@ input:focus{border-color:#3d6ea5;}
   <button id="bImport">⬆ 导入</button>
   <button id="bDir">💾 落库目录</button>
   <span id="dirDot" title="落库状态" style="width:9px;height:9px;border-radius:50%;background:#3a4656;display:inline-block"></span>
+  <span id="ocrBadge" title="OCR 引擎（点击重新检测 RapidOCR 服务）" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;font-size:12.5px;color:var(--dim)">
+    <span id="ocrDot" style="width:9px;height:9px;border-radius:50%;background:#3a4656;display:inline-block"></span>OCR
+  </span>
   <button id="bHist">🕘 历史</button>
   <span class="name" id="phName">未打开照片</span>
   <span id="stat"></span>
@@ -120,6 +123,7 @@ input:focus{border-color:#3d6ea5;}
   <input id="edLabel" placeholder="如 B-287" autocomplete="off">
   <input id="edDeg" title="旋转角度（度）" autocomplete="off">
   <button id="bOk" class="pri">✓ 确认</button>
+  <button id="bReocr" title="对本框重新跑 OCR（连接 RapidOCR 服务时为高精度）">🔍 识别</button>
   <button id="bDel" style="color:#ffb0b0">🗑 删除框</button>
   <span style="flex:1"></span>
   <button id="bPrev">◀ 上一块</button><button id="bNext">下一块 ▶</button>
@@ -205,6 +209,12 @@ function loadPhotoBlob(blob, name, prefetched){
 }
 async function setupPhoto(img, name, prefetched){
   P.img=img; P.name=name; P.ow=img.width; P.oh=img.height;
+  // canvas 污染实测（file:// 相对路径 <img> 直读会污染）：污染时 OCR 走服务端代读文件
+  try{
+    var t=document.createElement("canvas"); t.width=1; t.height=1;
+    t.getContext("2d").drawImage(img,0,0,1,1); t.toDataURL();
+    P.tainted=false;
+  }catch(err){ P.tainted=true; }
   var sc=Math.min(1, PW/Math.max(img.width,img.height));
   P.W=Math.round(img.width*sc); P.H=Math.round(img.height*sc);
   var pc=document.createElement("canvas");
@@ -255,6 +265,87 @@ function pieceBoxes(){
   return boxes;
 }
 
+/* ================= 高精度 OCR 服务（可选，RapidOCR） =================
+   label/start-ocr-server.bat 启动本机服务（127.0.0.1:8849）后自动启用；
+   未启动则回退内置模板 OCR。file:// 页面跨源 fetch 由服务端 CORS 放行。 */
+var OSVC={ host:"http://127.0.0.1:8849", ok:false, checking:false };
+function updateOcrBadge(){
+  var d=$("ocrDot");
+  d.style.background=OSVC.ok?"var(--ok)":"#3a4656";
+  d.title=OSVC.ok?"高精度（RapidOCR 服务已连接）":"内置模板（未检测到 RapidOCR 服务）";
+  $("ocrBadge").style.color=OSVC.ok?"var(--tx)":"var(--dim)";
+}
+function probeOcrSvc(){
+  if(OSVC.checking) return;
+  OSVC.checking=true;
+  var ctl=new AbortController(), t=setTimeout(function(){ ctl.abort(); },1500);
+  fetch(OSVC.host+"/health",{signal:ctl.signal})
+    .then(function(r){ return r.json(); })
+    .then(function(j){ OSVC.ok=!!j.ok; })
+    .catch(function(){ OSVC.ok=false; })
+    .then(function(){ OSVC.checking=false; clearTimeout(t); updateOcrBadge(); });
+}
+$("ocrBadge").addEventListener("click",function(){
+  probeOcrSvc();
+  toast(OSVC.ok?"OCR：高精度（RapidOCR）":"正在检测 RapidOCR 服务…");
+});
+// "B-241"/"B241"/"B—241" 等 → {letter,digits}
+function parseNumText(t){
+  if(!t) return null;
+  var m=String(t).replace(/\s+/g,"").match(/([A-Da-d])[-–—]?(\d{1,4})/);
+  return m ? { letter:m[1].toUpperCase(), digits:m[2] } : null;
+}
+async function svcOcr(req){                  // req: {img:dataURL} 或 {file:name, roi?}
+  var r=await fetch(OSVC.host+"/ocr",{ method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(req) });
+  if(!r.ok) throw new Error("OCR 服务 HTTP "+r.status);
+  var j=await r.json();
+  if(j.error) throw new Error(j.error);
+  return j.lines||[];
+}
+// 送识别的图像来源：canvas 被污染（file:// 直读）时改发文件名，由服务端代读磁盘
+function svcReqFor(){
+  if(P.tainted) return { file:P.name };
+  return { img:P.img.toDataURL("image/jpeg",0.92) };
+}
+// 整图 → 服务结果，转成与 detectNumbers 同构的数组
+// （x,y=编号中心，OCR 尺度坐标；ang=行框长边方向；n 恒过质量关）
+async function svcResults(img){
+  var req=svcReqFor();
+  var lines=await svcOcr(req);
+  var mw=Math.min(1,3072/Math.max(P.ow,P.oh));
+  var s=Math.round(P.ow*mw)/P.ow;             // 原图 → OCR 尺度
+  return lines.map(function(l){
+    var num=parseNumText(l.text);
+    if(!num||!l.box||l.box.length<3) return null;
+    var xs=l.box.map(function(p){return p[0];}), ys=l.box.map(function(p){return p[1];});
+    var d1=Math.hypot(l.box[1][0]-l.box[0][0], l.box[1][1]-l.box[0][1]);
+    var d2=Math.hypot(l.box[2][0]-l.box[1][0], l.box[2][1]-l.box[1][1]);
+    var ang = d1>=d2
+      ? Math.atan2(l.box[1][1]-l.box[0][1], l.box[1][0]-l.box[0][0])
+      : Math.atan2(l.box[2][1]-l.box[1][1], l.box[2][0]-l.box[1][0]);
+    return { letter:num.letter, digits:num.digits, conf:l.score,
+             x:(Math.min.apply(0,xs)+Math.max.apply(0,xs))/2*s,
+             y:(Math.min.apply(0,ys)+Math.max.apply(0,ys))/2*s,
+             ang:ang, n:6, svc:true };
+  }).filter(Boolean);
+}
+// 框内识别（裁剪/转正/涂白全部由服务端完成，坐标给原图像素）
+async function svcOcrRoi(p){
+  var k=P.ow/P.W;
+  var req=svcReqFor();
+  req.roi={ cx:p.box.cx*k, cy:p.box.cy*k, w:p.box.w*k, h:p.box.h*k,
+            ang:p.box.ang, pad:1.3 };
+  var lines=await svcOcr(req);
+  var best=null;
+  lines.forEach(function(l){
+    var num=parseNumText(l.text);
+    if(num&&(!best||l.score>best.conf)) best={letter:num.letter,digits:num.digits,conf:l.score};
+  });
+  return best;
+}
+
 /* ================= 自动标注 ================= */
 // 旋转框角度归一：正方形块对 90° 对称，主轴角折到 [-45°,45°]
 function norm90(a){
@@ -265,12 +356,25 @@ function norm90(a){
 }
 function autoLabel(){
   if(!P.img){ toast("先打开照片"); return; }
-  toast("正在自动标注…",true);
-  setTimeout(function(){
-    var boxes;
-    try{ boxes=pieceBoxes(); }catch(err){ toast("块检测失败："+err.message); return; }
-    var results=[];
+  toast(OSVC.ok?"正在自动标注（高精度 OCR）…":"正在自动标注…",true);
+  setTimeout(function(){ doAutoLabel(); },30);
+}
+async function doAutoLabel(){
+  var boxes;
+  try{ boxes=pieceBoxes(); }catch(err){
+    toast(P.tainted
+      ?"块检测需读取照片像素：请点「💾 落库目录」授权 label 文件夹后重试（画框识别不受影响）"
+      :"块检测失败："+err.message, true);
+    return;
+  }
+  var results=[], viaSvc=false;
+  if(OSVC.ok){
+    try{ results=await svcResults(P.img)||[]; viaSvc=true; }
+    catch(err){ toast("高精度 OCR 调用失败，回退内置模板（"+err.message+"）",true); }
+  }
+  if(!viaSvc){
     try{ results=detectNumbers(P.img)||[]; }catch(err){ results=[]; }
+  }
     // 质量过滤：编号至少 4 组件（字母+dash+2 数字）且 conf 达标，滤掉背景纹理误检
     results=results.filter(function(r){ return r.n>=4 && r.conf>=0.45; });
     // 编号（OCR 3072 坐标 → 工作分辨率）→ 块归属
@@ -327,8 +431,7 @@ function autoLabel(){
     P.pieces=keep.concat(fresh);
     renderAll();
     var numd=fresh.filter(function(p){ return p.label; }).length;
-    toast("自动标注："+fresh.length+" 块，读出编号 "+numd+" 个",true);
-  },30);
+    toast("自动标注："+fresh.length+" 块，读出编号 "+numd+" 个"+(viaSvc?"（RapidOCR）":""),true);
 }
 function keepBoxesOverlap(bb){
   return P.pieces.some(function(p){
@@ -574,15 +677,27 @@ function commitLabel(ok){
     if(!nl){ toast("编号格式：字母 A-D + 数字，如 B-287"); $("edLabel").focus(); return; }
     p.label=nl; p.src="manual"; p.conf=1;
   }
-  selectPiece(ok?nextEmpty(P.sel+1):P.sel);
+  if(ok){
+    var ni=nextEmpty(P.sel+1);
+    selectPiece(ni);                       // 没有未确认块时 ni=-1 → 编辑条关闭
+    if(ni<0) toast("全部块已确认完成 🎉");
+  } else selectPiece(P.sel);
   saveSoon(); renderAll();
 }
+// 下一个/上一个「未确认」块；全部确认完返回 -1（关闭编辑条，不停在已确认块上）
 function nextEmpty(from){
   for(var d=0;d<P.pieces.length;d++){
     var i=(from+d)%P.pieces.length;
     if(P.pieces[i].src!=="manual"||!P.pieces[i].label) return i;
   }
-  return Math.min(from,P.pieces.length-1);
+  return -1;
+}
+function prevEmpty(from){
+  for(var d=P.pieces.length-1;d>=0;d--){
+    var i=(from+d)%P.pieces.length;
+    if(P.pieces[i].src!=="manual"||!P.pieces[i].label) return i;
+  }
+  return -1;
 }
 $("bOk").addEventListener("click",function(){ commitLabel(true); });
 $("edLabel").addEventListener("keydown",function(e){
@@ -605,8 +720,13 @@ $("bDel").addEventListener("click",function(){
   P.pieces.splice(P.sel,1);
   selectPiece(-1); saveSoon(); renderAll();
 });
-$("bPrev").addEventListener("click",function(){ if(P.pieces.length) selectPiece((P.sel-1+P.pieces.length)%P.pieces.length); });
-$("bNext").addEventListener("click",function(){ if(P.pieces.length) selectPiece((P.sel+1)%P.pieces.length); });
+$("bReocr").addEventListener("click",function(){
+  if(P.sel<0||!P.img) return;
+  toast("正在识别框 #"+(P.sel+1)+"…");
+  setTimeout(function(){ localOCR(P.pieces[P.sel]); },30);
+});
+$("bPrev").addEventListener("click",function(){ if(P.pieces.length) selectPiece(prevEmpty(P.sel<0?P.pieces.length-1:P.sel-1)); });
+$("bNext").addEventListener("click",function(){ if(P.pieces.length) selectPiece(nextEmpty(P.sel+1)); });
 
 /* ================= 指针交互：画框 / 移动 / 旋转 / 缩放 / 平移 ================= */
 var drag=null;
@@ -730,9 +850,9 @@ function diagBox(x0,y0,x1,y1){
   var ang=Math.atan2(y1-y0,x1-x0)-Math.PI/4;
   return { cx:(x0+x1)/2, cy:(y0+y1)/2, w:s, h:s, ang:ang };
 }
-// 画完框后局部 OCR：把框内区域转正裁出（OCR 尺度+大量补白，保证
-// 字符尺寸/间距落在 detectNumbers 的参数窗口内），识别编号自动填入
-function localOCR(p){
+// 画完框后局部 OCR：把框内区域转正裁出（OCR 尺度+大量补白），识别编号自动填入
+// 优先走 RapidOCR 服务（cls 自动处理倒立），失败/未启动回退内置模板 OCR（含 180° 重试）
+async function localOCR(p){
   if(!p||!P.img) return;
   var b=p.box, k=P.ow/P.W;                    // 工作 → 原图
   var kocr=Math.min(1, 3072/Math.max(P.ow,P.oh));   // 原图 → OCR 尺度（与全图识别一致）
@@ -759,28 +879,39 @@ function localOCR(p){
   c2.rect(-inW/2, -inH/2, inW, inH);
   c2.fill("evenodd");
   c2.restore();
-  var best=null;
+  var best=null, viaSvc=false;
   function pick(res){
     res.forEach(function(r){
       if(r.n>=4&&r.conf>=0.4&&(!best||r.conf>best.conf)) best=r;
     });
   }
-  try{ pick(detectNumbers(cv2)); }catch(err){}
-  if(!best){
-    // 倒立重试：编号相对块可能转了 180°（块方向无极性）
+  if(OSVC.ok){
     try{
-      var cv3=document.createElement("canvas");
-      cv3.width=side; cv3.height=side;
-      var c3=cv3.getContext("2d");
-      c3.translate(side/2,side/2); c3.rotate(Math.PI);
-      c3.drawImage(cv2,-side/2,-side/2);
-      pick(detectNumbers(cv3));
-    }catch(err){}
+      best=await svcOcrRoi(p);               // 裁剪/转正/涂白在服务端完成
+      if(best) viaSvc=true;
+    }catch(err){ toast("高精度 OCR 调用失败，改用内置模板（"+err.message+"）",true); }
+  }
+  if(!best){
+    try{ pick(detectNumbers(cv2)); }catch(err){}
+    if(!best){
+      // 倒立重试：编号相对块可能转了 180°（块方向无极性）
+      try{
+        var cv3=document.createElement("canvas");
+        cv3.width=side; cv3.height=side;
+        var c3=cv3.getContext("2d");
+        c3.translate(side/2,side/2); c3.rotate(Math.PI);
+        c3.drawImage(cv2,-side/2,-side/2);
+        pick(detectNumbers(cv3));
+      }catch(err){}
+    }
   }
   if(best){
     p.label=best.letter+"-"+best.digits;
     p.conf=best.conf;
-    toast("框 #"+(P.pieces.indexOf(p)+1)+" 识别："+p.label+"（"+(best.conf*100|0)+"%）"+(p.conf<0.65?" · 建议核对":""));
+    // 重识别成功后回到「未确认」态：需要人工再核一遍才算数
+    p.src="auto";
+    toast("框 #"+(P.pieces.indexOf(p)+1)+" 识别："+p.label+"（"+(best.conf*100|0)+"%）"
+      +(viaSvc?" · RapidOCR":"")+(p.conf<0.65?" · 建议核对":""));
   } else {
     toast("框 #"+(P.pieces.indexOf(p)+1)+" 未读出编号，请手输",true);
   }
@@ -1264,6 +1395,7 @@ async function photoFromDir(name){
 
 /* ================= 启动 ================= */
 restoreDir();
+probeOcrSvc();
 document.addEventListener("keydown",function(e){
   var ae=document.activeElement;
   var inEd=(ae===$("edLabel")||ae===$("edDeg"));
