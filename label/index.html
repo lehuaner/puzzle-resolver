@@ -95,7 +95,7 @@ input:focus{border-color:#3d6ea5;}
   <div id="side">
     <div class="hd"><span>块列表</span><span id="pCount">0</span></div>
     <div id="plist"></div>
-    <div id="hint">拖拽＝画新框（AABB）<br>选中后：拖框移动 · 拖顶部圆点<b>旋转</b> · 拖右下角方块缩放<br>编号排列方向已自动对齐块边，一般微调即可</div>
+    <div id="hint"><b>沿块的斜对角拖一条线</b> → 松手自动生成贴合的旋转矩形，并自动识别框内编号<br>选中后：拖框移动 · 拖顶部圆点旋转 · 拖右下角方块缩放<br>编号未读出/读错时在底部编辑条手输</div>
   </div>
 </div>
 
@@ -370,10 +370,24 @@ function renderAll(){
   P.pieces.forEach(function(p,i){ drawPiece(p,i,false); });
   if(P.sel>=0&&P.pieces[P.sel]) drawPiece(P.pieces[P.sel],P.sel,true);
   if(drag&&drag.drawing){
-    ctx.strokeStyle="rgba(255,212,94,.9)"; ctx.lineWidth=Math.max(1.5,P.W/700);
-    ctx.setLineDash([8,6]);
-    ctx.strokeRect(drag.x0,drag.y0,drag.x1-drag.x0,drag.y1-drag.y0);
+    // 拖拽显示为对角线（两端点），松手自动成旋转矩形
+    ctx.strokeStyle="rgba(255,212,94,.95)"; ctx.lineWidth=Math.max(2,P.W/600);
+    ctx.setLineDash([10,7]);
+    ctx.beginPath(); ctx.moveTo(drag.x0,drag.y0); ctx.lineTo(drag.x1,drag.y1); ctx.stroke();
     ctx.setLineDash([]);
+    [drag.x0,drag.x1].forEach(function(px,i){
+      ctx.beginPath(); ctx.arc(i? drag.x1:drag.x0, i? drag.y1:drag.y0, Math.max(5,P.W/220), 0, Math.PI*2);
+      ctx.fillStyle="rgba(255,212,94,.95)"; ctx.fill();
+    });
+    // 半透明预览：以对角线为对角的旋转正方形
+    var pv=diagBox(drag.x0,drag.y0,drag.x1,drag.y1);
+    if(pv){
+      ctx.save();
+      ctx.translate(pv.cx,pv.cy); ctx.rotate(pv.ang);
+      ctx.strokeStyle="rgba(255,212,94,.45)"; ctx.lineWidth=Math.max(1.5,P.W/800);
+      ctx.strokeRect(-pv.w/2,-pv.h/2,pv.w,pv.h);
+      ctx.restore();
+    }
   }
   updateSide(); updateStat();
 }
@@ -604,16 +618,83 @@ function endDrag(e){
   if(!drag) return;
   var d=drag; drag=null;
   if(d.kind==="draw"&&d.drawing){
-    var b=[Math.min(d.x0,d.x1),Math.min(d.y0,d.y1),Math.abs(d.x1-d.x0),Math.abs(d.y1-d.y0)];
-    if(b[2]>P.W*0.03&&b[3]>P.H*0.03){
-      P.pieces.push({ id:P.nextId++, box:{cx:b[0]+b[2]/2, cy:b[1]+b[3]/2, w:b[2], h:b[3], ang:0},
-                      label:"", conf:0, src:"manual" });
+    var nb=diagBox(d.x0,d.y0,d.x1,d.y1);
+    if(nb){
+      var np={ id:P.nextId++, box:nb, label:"", conf:0, src:"manual" };
+      P.pieces.push(np);
       saveSoon(); renderAll();
       selectPiece(P.pieces.length-1);
+      toast("已生成矩形，正在识别框内编号…");
+      setTimeout(function(){ localOCR(np); },30);
     }
   } else if((d.kind==="move"&&d.moved)||d.kind==="rot"||d.kind==="scale"){
     saveSoon(); renderAll();
   }
+}
+// 对角线两端点 → 旋转正方形（拼图块近方形）：
+// 中心=中点，边长=对角线/√2，角度=对角线角-45°
+function diagBox(x0,y0,x1,y1){
+  var d=Math.hypot(x1-x0,y1-y0);
+  if(d<P.W*0.04) return null;                 // 太短当误触
+  var s=d/Math.SQRT2;
+  var ang=Math.atan2(y1-y0,x1-x0)-Math.PI/4;
+  return { cx:(x0+x1)/2, cy:(y0+y1)/2, w:s, h:s, ang:ang };
+}
+// 画完框后局部 OCR：把框内区域转正裁出（OCR 尺度+大量补白，保证
+// 字符尺寸/间距落在 detectNumbers 的参数窗口内），识别编号自动填入
+function localOCR(p){
+  if(!p||!P.img) return;
+  var b=p.box, k=P.ow/P.W;                    // 工作 → 原图
+  var kocr=Math.min(1, 3072/Math.max(P.ow,P.oh));   // 原图 → OCR 尺度（与全图识别一致）
+  var z=kocr*1.6;                             // 局部放大 1.6×：字符更大更易匹配（画布同步加大保持聚类半径窗口）
+  var side=Math.max(2600, Math.ceil(b.w*k*z*1.4));  // 块区居中+涂白（dmax=26·side/1500 需 > 字符间距·z）
+  var cv2=document.createElement("canvas");
+  cv2.width=side; cv2.height=side;
+  var c2=cv2.getContext("2d",{willReadFrequently:true});
+  c2.fillStyle="#f5f2ea"; c2.fillRect(0,0,side,side);   // 界外白底
+  c2.save();
+  c2.translate(side/2, side/2);
+  c2.rotate(-b.ang);
+  c2.scale(z,z);
+  c2.drawImage(P.img, -b.cx*k, -b.cy*k);
+  c2.restore();
+  // 框外涂白（evenodd 挖洞，留 30% 余量防框稍偏裁掉编号）——避免邻近块的编号混入
+  var inW=b.w*k*z*1.3, inH=b.h*k*z*1.3;
+  c2.save();
+  c2.translate(side/2, side/2);
+  c2.rotate(-b.ang);
+  c2.fillStyle="#f5f2ea";
+  c2.beginPath();
+  c2.rect(-side, -side, side*2, side*2);
+  c2.rect(-inW/2, -inH/2, inW, inH);
+  c2.fill("evenodd");
+  c2.restore();
+  var best=null;
+  function pick(res){
+    res.forEach(function(r){
+      if(r.n>=4&&r.conf>=0.4&&(!best||r.conf>best.conf)) best=r;
+    });
+  }
+  try{ pick(detectNumbers(cv2)); }catch(err){}
+  if(!best){
+    // 倒立重试：编号相对块可能转了 180°（块方向无极性）
+    try{
+      var cv3=document.createElement("canvas");
+      cv3.width=side; cv3.height=side;
+      var c3=cv3.getContext("2d");
+      c3.translate(side/2,side/2); c3.rotate(Math.PI);
+      c3.drawImage(cv2,-side/2,-side/2);
+      pick(detectNumbers(cv3));
+    }catch(err){}
+  }
+  if(best){
+    p.label=best.letter+"-"+best.digits;
+    p.conf=best.conf;
+    toast("框 #"+(P.pieces.indexOf(p)+1)+" 识别："+p.label+"（"+(best.conf*100|0)+"%）"+(p.conf<0.65?" · 建议核对":""));
+  } else {
+    toast("框 #"+(P.pieces.indexOf(p)+1)+" 未读出编号，请手输",true);
+  }
+  saveSoon(); renderAll();
 }
 cv.addEventListener("pointerup",endDrag);
 cv.addEventListener("pointercancel",function(){ drag=null; });
