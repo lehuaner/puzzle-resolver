@@ -3,7 +3,7 @@
  "photo": "85891.jpg",
  "width": 4096,
  "height": 3072,
- "updated": 1792672309560,
+ "updated": 1792673596005,
  "pieces": [
   {
    "box": {
@@ -25,8 +25,8 @@
     "h": 182,
     "ang": 0.036
    },
-   "label": "",
-   "conf": 0,
+   "label": "A-223",
+   "conf": 1,
    "src": "manual"
   },
   {
@@ -39,7 +39,7 @@
    },
    "label": "A-240",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -51,7 +51,7 @@
    },
    "label": "B-265",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -63,7 +63,7 @@
    },
    "label": "A-246",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -75,7 +75,7 @@
    },
    "label": "B-290",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -87,19 +87,7 @@
    },
    "label": "D-788",
    "conf": 1,
-   "src": "auto"
-  },
-  {
-   "box": {
-    "cx": 4068,
-    "cy": 548,
-    "w": 182,
-    "h": 182,
-    "ang": -0.545
-   },
-   "label": "A-19",
-   "conf": 0.99,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -111,7 +99,7 @@
    },
    "label": "A-245",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -123,7 +111,7 @@
    },
    "label": "B-294",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -135,7 +123,7 @@
    },
    "label": "A-241",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -147,7 +135,7 @@
    },
    "label": "C-549",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -158,8 +146,8 @@
     "ang": -0.53
    },
    "label": "C-574",
-   "conf": 0.95,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -171,7 +159,7 @@
    },
    "label": "C-573",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -181,9 +169,9 @@
     "h": 145,
     "ang": -0.565
    },
-   "label": "C-59",
-   "conf": 0.8,
-   "src": "auto"
+   "label": "C-599",
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -195,7 +183,7 @@
    },
    "label": "C-598",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -207,7 +195,7 @@
    },
    "label": "C-517",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -219,7 +207,7 @@
    },
    "label": "D-797",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -231,7 +219,7 @@
    },
    "label": "A-186",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -243,7 +231,7 @@
    },
    "label": "A-187",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -255,7 +243,7 @@
    },
    "label": "A-162",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -267,7 +255,7 @@
    },
    "label": "A-188",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -279,19 +267,19 @@
    },
    "label": "A-163",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
     "cx": 737,
     "cy": 1908,
-    "w": 232,
-    "h": 232,
-    "ang": 0.672
+    "w": 183,
+    "h": 183,
+    "ang": 3.874
    },
    "label": "C-725",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -302,32 +290,32 @@
     "ang": -0.777
    },
    "label": "C-750",
-   "conf": 0.94,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
-    "cx": 725,
-    "cy": 2135,
-    "w": 232,
-    "h": 232,
-    "ang": 0.707
+    "cx": 728,
+    "cy": 2141,
+    "w": 157,
+    "h": 157,
+    "ang": 3.907
    },
    "label": "C-749",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
     "cx": 615,
     "cy": 2261,
-    "w": 232,
-    "h": 232,
+    "w": 171,
+    "h": 171,
     "ang": 0.719
    },
    "label": "C-748",
-   "conf": 0.99,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -338,8 +326,8 @@
     "ang": 0.25
    },
    "label": "A-161",
-   "conf": 0.99,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -351,7 +339,7 @@
    },
    "label": "B-410",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -363,7 +351,7 @@
    },
    "label": "B-385",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -375,7 +363,7 @@
    },
    "label": "A-124",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -387,7 +375,7 @@
    },
    "label": "D-800",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -399,7 +387,7 @@
    },
    "label": "C-666",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -410,8 +398,8 @@
     "ang": 0
    },
    "label": "C-742",
-   "conf": 0.92,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -423,7 +411,7 @@
    },
    "label": "C-717",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -435,7 +423,7 @@
    },
    "label": "C-692",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -447,7 +435,7 @@
    },
    "label": "C-667",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -459,7 +447,7 @@
    },
    "label": "C-642",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -471,7 +459,7 @@
    },
    "label": "C-718",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -483,7 +471,7 @@
    },
    "label": "C-693",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -495,7 +483,7 @@
    },
    "label": "C-668",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -507,7 +495,7 @@
    },
    "label": "C-643",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -519,7 +507,7 @@
    },
    "label": "C-694",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -531,7 +519,7 @@
    },
    "label": "C-719",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -543,7 +531,7 @@
    },
    "label": "A-017",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -554,8 +542,8 @@
     "ang": -0.68
    },
    "label": "D-775",
-   "conf": 0.99,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -567,7 +555,7 @@
    },
    "label": "A-018",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -579,7 +567,7 @@
    },
    "label": "A-019",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -591,7 +579,7 @@
    },
    "label": "A-042",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -603,7 +591,7 @@
    },
    "label": "D-823",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -615,7 +603,7 @@
    },
    "label": "D-848",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -627,7 +615,7 @@
    },
    "label": "D-799",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -639,7 +627,7 @@
    },
    "label": "D-873",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -651,7 +639,7 @@
    },
    "label": "D-824",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -663,7 +651,7 @@
    },
    "label": "D-849",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -675,7 +663,7 @@
    },
    "label": "D-874",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -687,7 +675,7 @@
    },
    "label": "D-825",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -699,7 +687,7 @@
    },
    "label": "D-850",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -711,7 +699,7 @@
    },
    "label": "D-875",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -723,7 +711,7 @@
    },
    "label": "A-149",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -735,7 +723,7 @@
    },
    "label": "C-525",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -747,7 +735,7 @@
    },
    "label": "C-550",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -759,7 +747,7 @@
    },
    "label": "C-575",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -771,7 +759,7 @@
    },
    "label": "C-600",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -783,7 +771,7 @@
    },
    "label": "A-015",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -795,7 +783,7 @@
    },
    "label": "A-014",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -807,7 +795,7 @@
    },
    "label": "A-013",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -819,7 +807,7 @@
    },
    "label": "A-040",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -830,8 +818,8 @@
     "ang": -0.113
    },
    "label": "A-213",
-   "conf": 0.99,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -843,7 +831,7 @@
    },
    "label": "A-212",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -855,7 +843,7 @@
    },
    "label": "B-264",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -867,7 +855,7 @@
    },
    "label": "B-289",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -879,7 +867,7 @@
    },
    "label": "B-359",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -891,7 +879,7 @@
    },
    "label": "B-333",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -903,7 +891,7 @@
    },
    "label": "A-236",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -914,8 +902,8 @@
     "ang": -0.742
    },
    "label": "A-210",
-   "conf": 0.73,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -926,8 +914,8 @@
     "ang": 0.697
    },
    "label": "A-211",
-   "conf": 0.99,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -939,7 +927,7 @@
    },
    "label": "A-235",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -951,7 +939,7 @@
    },
    "label": "B-358",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -963,7 +951,7 @@
    },
    "label": "B-386",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -975,7 +963,7 @@
    },
    "label": "A-185",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -987,7 +975,7 @@
    },
    "label": "A-247",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -999,7 +987,7 @@
    },
    "label": "C-536",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -1011,7 +999,7 @@
    },
    "label": "B-360",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -1023,7 +1011,7 @@
    },
    "label": "B-471",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -1035,7 +1023,7 @@
    },
    "label": "A-239",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -1047,7 +1035,7 @@
    },
    "label": "D-822",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -1059,7 +1047,7 @@
    },
    "label": "A-214",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -1071,7 +1059,7 @@
    },
    "label": "D-772",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -1083,7 +1071,7 @@
    },
    "label": "B-495",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -1094,8 +1082,8 @@
     "ang": 0.671
    },
    "label": "D-798",
-   "conf": 0.65,
-   "src": "auto"
+   "conf": 1,
+   "src": "manual"
   },
   {
    "box": {
@@ -1107,7 +1095,7 @@
    },
    "label": "C-747",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -1119,7 +1107,7 @@
    },
    "label": "B-407",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -1131,7 +1119,7 @@
    },
    "label": "A-248",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -1143,7 +1131,7 @@
    },
    "label": "B-349",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -1155,7 +1143,7 @@
    },
    "label": "B-447",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
   },
   {
    "box": {
@@ -1167,7 +1155,139 @@
    },
    "label": "A-150",
    "conf": 1,
-   "src": "auto"
+   "src": "manual"
+  },
+  {
+   "box": {
+    "cx": 523,
+    "cy": 1725,
+    "w": 159,
+    "h": 159,
+    "ang": 0.762
+   },
+   "label": "C-675",
+   "conf": 1,
+   "src": "manual"
+  },
+  {
+   "box": {
+    "cx": 3252,
+    "cy": 1442,
+    "w": 150,
+    "h": 150,
+    "ang": 0.361
+   },
+   "label": "C-771",
+   "conf": 1,
+   "src": "manual"
+  },
+  {
+   "box": {
+    "cx": 3373,
+    "cy": 1425,
+    "w": 159,
+    "h": 159,
+    "ang": -2.589
+   },
+   "label": "D-770",
+   "conf": 1,
+   "src": "manual"
+  },
+  {
+   "box": {
+    "cx": 2672,
+    "cy": 601,
+    "w": 144,
+    "h": 144,
+    "ang": 0.224
+   },
+   "label": "C-535",
+   "conf": 1,
+   "src": "manual"
+  },
+  {
+   "box": {
+    "cx": 2128,
+    "cy": 253,
+    "w": 145,
+    "h": 145,
+    "ang": 0.5
+   },
+   "label": "C-721",
+   "conf": 1,
+   "src": "manual"
+  },
+  {
+   "box": {
+    "cx": 1446,
+    "cy": 1234,
+    "w": 167,
+    "h": 167,
+    "ang": -2.513
+   },
+   "label": "D-900",
+   "conf": 1,
+   "src": "manual"
+  },
+  {
+   "box": {
+    "cx": 374,
+    "cy": 438,
+    "w": 152,
+    "h": 152,
+    "ang": -1.595
+   },
+   "label": "A-237",
+   "conf": 1,
+   "src": "manual"
+  },
+  {
+   "box": {
+    "cx": 1054,
+    "cy": 2322,
+    "w": 158,
+    "h": 158,
+    "ang": 1.737
+   },
+   "label": "A-160",
+   "conf": 1,
+   "src": "manual"
+  },
+  {
+   "box": {
+    "cx": 837,
+    "cy": 2227,
+    "w": 153,
+    "h": 153,
+    "ang": -0.872
+   },
+   "label": "D-774",
+   "conf": 1,
+   "src": "manual"
+  },
+  {
+   "box": {
+    "cx": 725,
+    "cy": 2356,
+    "w": 162,
+    "h": 162,
+    "ang": 3.914
+   },
+   "label": "D-773",
+   "conf": 1,
+   "src": "manual"
+  },
+  {
+   "box": {
+    "cx": 629,
+    "cy": 2039,
+    "w": 155,
+    "h": 155,
+    "ang": -0.906
+   },
+   "label": "C-724",
+   "conf": 1,
+   "src": "manual"
   }
  ]
 }
