@@ -222,8 +222,8 @@ async function setupPhoto(img, name, prefetched){
   pc.getContext("2d").drawImage(img,0,0,P.W,P.H);
   P.base=pc;
   ocrK=P.W/Math.round(img.width*Math.min(1,3072/Math.max(img.width,img.height)));
-  // 数据优先级：历史点击预取 > 落库目录文件 > labels-data.js 快照 > 本机旧缓存
-  var saved=prefetched || await loadFromDir(name) || ALL_DATA[name] || loadLocal(name);
+  // 数据优先级：历史点击预取 > 落库目录文件 > HTTP 服务端文件 > labels-data.js 快照 > 本机旧缓存
+  var saved=prefetched || await loadFromDir(name) || await loadFromHttp(name) || ALL_DATA[name] || loadLocal(name);
   P.pieces=[]; P.nextId=1; P.sel=-1;
   fitView();
   if(saved){ applyData(saved); toast("已恢复标注 "+saved.pieces.length+" 块"); renderAll(); }
@@ -981,12 +981,49 @@ function workBBoxArr(b){
   return [b[0]*k, b[1]*k, b[2]*k, b[3]*k];
 }
 var saveT=null;
+// http(s) 访问（服务托管）时由服务端直接落盘，无需浏览器目录授权——
+// 局域网 IP 等非安全上下文浏览器不提供 showDirectoryPicker，此模式是唯一自动保存通道
+var HTTP_SAVE=/^https?:$/.test(location.protocol);
+async function httpSavePhoto(){
+  try{
+    var r=await fetch("/label-api/save",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({photo:P.name,data:dataNow()})});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    saveSoon.failed=false;
+    setDirDot("on");
+  }catch(err){
+    setDirDot("warn");
+    if(!saveSoon.warned){ saveSoon.warned=true; toast("自动保存失败："+err.message,true); }
+  }
+}
+async function loadFromHttp(name){
+  if(!HTTP_SAVE) return null;
+  try{
+    var r=await fetch(encodeURI(toLabelFn(name)));
+    if(!r.ok) return null;
+    return await r.json();
+  }catch(err){ return null; }
+}
+// 启动时把服务端全部标注并入 ALL_DATA（历史列表实时源，快照可能滞后）
+async function loadHttpAll(){
+  try{
+    var r=await fetch("/label-api/list");
+    if(!r.ok) return;
+    var d=await r.json();
+    Object.keys(d).forEach(function(k){
+      if(d[k]&&d[k].pieces&&(!ALL_DATA[k]||(d[k].updated||0)>(ALL_DATA[k].updated||0))) ALL_DATA[k]=d[k];
+    });
+    renderHist();
+  }catch(err){}
+}
 function saveSoon(){
   clearTimeout(saveT);
   saveT=setTimeout(function(){
     if(P.name&&P.pieces.length){
-      // 只落文件（落库目录）；不再写 localStorage
+      // 落库链：浏览器目录授权 → HTTP 服务端落盘 → 提示授权
       if(dirHandle) persistPhoto(P.name);
+      else if(HTTP_SAVE) httpSavePhoto();
       else if(!saveSoon.warned){
         saveSoon.warned=true;
         toast("点「💾 落库目录」选择保存位置（建议 label 文件夹），标注才能落盘",true);
@@ -1095,6 +1132,9 @@ $("hlist").addEventListener("click",async function(e){
           var p=await dirHandle.queryPermission({mode:"readwrite"});
           if(p==="granted") await dirHandle.removeEntry(toLabelFn(del));
         }catch(err){}
+      } else if(HTTP_SAVE){
+        try{ await fetch("/label-api/delete",{method:"POST",
+          headers:{"Content-Type":"application/json"},body:JSON.stringify({photo:del})}); }catch(err){}
       }
       localStorage.removeItem(LS+del);
       delete ALL_DATA[del];
@@ -1294,6 +1334,8 @@ $("bDir").addEventListener("click",async function(){
   }
 });
 async function restoreDir(){
+  // http 托管模式：服务端就是落库目录，无需浏览器授权
+  if(HTTP_SAVE){ setDirDot("on"); return; }
   if(!fsSupported) return;
   try{
     var h=await idbGet("dirHandle");
@@ -1390,9 +1432,20 @@ async function persistPhoto(name){
   }
 }
 // 照片副本也存进落库目录（与 .labels.json 并排同名）：文件夹自包含，
-// 换浏览器 / 清缓存后点历史仍能直接加载。已存在同名则跳过。
+// 换浏览器 / 清缓存后点历史仍能直接加载。已存在同名则跳过（http 模式由服务端判重）。
 async function persistPhotoImage(name, blob){
-  if(!dirHandle||!blob) return;
+  if(!blob) return;
+  if(!dirHandle && HTTP_SAVE){
+    // http 落库：先问服务端有没有该照片，没有才上传
+    try{
+      var head=await fetch(encodeURI(name),{method:"HEAD"});
+      if(head.ok) return;
+      var r=await fetch("/label-api/photo?name="+encodeURIComponent(name),{method:"POST",body:blob});
+      if(!r.ok) throw new Error("HTTP "+r.status);
+    }catch(err){}
+    return;
+  }
+  if(!dirHandle) return;
   try{
     var p=await dirHandle.queryPermission({mode:"readwrite"});
     if(p!=="granted") return;
@@ -1418,6 +1471,7 @@ async function photoFromDir(name){
 /* ================= 启动 ================= */
 restoreDir();
 probeOcrSvc();
+loadHttpAll();
 document.addEventListener("keydown",function(e){
   var ae=document.activeElement;
   var inEd=(ae===$("edLabel")||ae===$("edDeg"));

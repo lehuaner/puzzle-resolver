@@ -40,6 +40,61 @@ if (isProd) {
   // 标注台（label/）：http 方式访问时照片同源加载，canvas 不被污染，
   // 自动标注（块检测需读照片像素）在 http 下完整可用
   app.use("/label", express.static(path.join(ROOT, "label"), { index: "index.html" }));
+  // 标注台落库 API：http 模式（含局域网 IP 等非安全上下文，浏览器不提供
+  // 目录授权）由服务端直接写 label/ 目录，页面改动即自动保存
+  const LABEL_DIR = path.join(ROOT, "label");
+  const SAFE_NAME = /^[A-Za-z0-9_.\-]+$/;
+  const toLabelJson = (photo) => path.join(LABEL_DIR, photo.replace(/\.[^.]+$/, "") + ".labels.json");
+  function rebuildLabelSnapshot() {
+    try {
+      const data = {};
+      for (const f of fs.readdirSync(LABEL_DIR)) {
+        if (!f.endsWith(".labels.json")) continue;
+        try {
+          const d = JSON.parse(fs.readFileSync(path.join(LABEL_DIR, f), "utf8"));
+          if (d && d.photo && Array.isArray(d.pieces)) data[d.photo] = d;
+        } catch { /* 跳过坏文件 */ }
+      }
+      fs.writeFileSync(path.join(LABEL_DIR, "labels-data.js"),
+        "/* 自动生成：全量标注数据快照（由标注台落库时维护）。请勿手改。 */\nvar LABEL_DATA=" + JSON.stringify(data) + ";");
+    } catch { /* label 目录可能不存在 */ }
+  }
+  app.post("/label-api/save", express.json({ limit: "20mb" }), function (req, res) {
+    const photo = String(req.body.photo || "");
+    const d = req.body.data;
+    if (!SAFE_NAME.test(photo)) return res.status(400).json({ error: "bad name" });
+    if (!d || !Array.isArray(d.pieces)) return res.status(400).json({ error: "bad data" });
+    d.photo = photo;
+    fs.writeFileSync(toLabelJson(photo), JSON.stringify(d, null, 1));
+    rebuildLabelSnapshot();
+    res.json({ ok: true });
+  });
+  app.post("/label-api/photo", express.raw({ type: "*/*", limit: "60mb" }), function (req, res) {
+    const name = String(req.query.name || "");
+    if (!SAFE_NAME.test(name)) return res.status(400).json({ error: "bad name" });
+    fs.writeFileSync(path.join(LABEL_DIR, name), req.body);
+    res.json({ ok: true });
+  });
+  app.get("/label-api/list", function (req, res) {
+    const data = {};
+    try {
+      for (const f of fs.readdirSync(LABEL_DIR)) {
+        if (!f.endsWith(".labels.json")) continue;
+        try {
+          const d = JSON.parse(fs.readFileSync(path.join(LABEL_DIR, f), "utf8"));
+          if (d && d.photo && Array.isArray(d.pieces)) data[d.photo] = d;
+        } catch { /* 跳过坏文件 */ }
+      }
+    } catch { /* 目录不存在 */ }
+    res.json(data);
+  });
+  app.post("/label-api/delete", express.json(), function (req, res) {
+    const photo = String(req.body.photo || "");
+    if (!SAFE_NAME.test(photo)) return res.status(400).json({ error: "bad name" });
+    try { fs.unlinkSync(toLabelJson(photo)); } catch { /* 已不存在 */ }
+    rebuildLabelSnapshot();
+    res.json({ ok: true });
+  });
   app.use(express.static(DIST, { maxAge: "1h", index: "index.html" }));
   app.get("*", function (req, res) {
     res.sendFile(path.join(DIST, "index.html"));
