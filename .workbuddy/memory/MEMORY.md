@@ -38,6 +38,7 @@
   - 自动链：`rvDone()` → `autoVerify(tag,cb,{extend:true})` → 复核 → 补漏 → **延伸**（延伸纯几何，`!OSVC.ok` 也跑，此时 nW/nG 归零）。工具条 `#bExtend` 常驻；`resetScan` 归零 `extLv`；`extendInfer` 一块没多推就退回原档位。
   - **删掉的块**：整块模式下 `scanHitIdx` 走网格兜底总能拿到编号，但该号不在 `ocr.map` 也不在 `inferredPos` → 老代码**什么都不弹**。现在 `ocr.drop`/`inferDrop` 里的号走 `openPick({restore})`「补回来」，`photoPosOf` 加 `src:"keep"`（用 `ocr.keep` 原位置+原角度；角度丢了拼好组会散架），散块空白落点用 `dropNear()`（0.85 片宽）命中。
   - **整块模式点没算进来的格子** → `openPick({cell:idx})`「该是 N，确认补上？」→ `addManualReading`。这才是「即使选了增删也点不动」的那条路。
+- **可疑点查重（v28b，1b03ae7）**：recalcScan 末尾（drop 清理后、`scan.result=set` 前）遍历 `suspIdx`，编号已在 `set` 里 → 自动确认、移出人工审查队列，记 `scan.suspAuto`（明细列「已自动确认 N 个可疑（结果里已有该块）」）。**只删可疑标记，绝不动 set/map/inferredPos**（用户明确要求别把正常点删掉）。不用 `suspAck`（永久黑名单），每次重算重查 → 块不在结果里时可疑会重新出现。连带两坑：① 查重吃光可疑后走不到 `rvDone()`，"审完可疑自动延伸"落空 → 自动识别链也带 `{extend:true}`，`doExt` 不再要求 `extLv==0` ② `extendInfer` 的"没多推就退回"必须在 `was===0`（首次试探）时才退，已在延伸档时退回会把上次延伸出来的块全撤掉＝掉块。认知：blockMode 两类可疑的编号必然在 result（conf≥0.5 就进 set）→ 查重后基本清零；仍留人工审的只剩散块组推算里 `occ` 占位那条。
 
 ## 布局 / 窄屏
 - **v22**：≤900 `.scan-stage{flex:0 0 auto;height:clamp(160px,44vh,460px)}` + `.scan-side{flex:1 1 auto;min-height:0;overflow-y:auto}`。①**数据栏底 padding 归零**——`position:sticky;bottom:0` 对齐内容盒底，留 10px 就从缝里露字 ②贴底栏必须 `flex:0 0 100%;width:100%`+`background:var(--panel)`，否则 `align-items:flex-start` 下只占半行。≤520：三动作键 12.5px 压单行、`.scan-bar` 改 `nowrap+overflow-x:auto`、`.scan-tip` 改 `left/right:8px+transform:none`。
