@@ -928,8 +928,9 @@ function recalcScan(){
         var cd=oneAxis==="row"
           ? [rcToIdx(rc0.row,rc0.col-1), rcToIdx(rc0.row,rc0.col+1)]
           : [rcToIdx(rc0.row-1,rc0.col), rcToIdx(rc0.row+1,rc0.col)];
-        // 已被别的读数占掉的编号不算候选（那块在那个号上已经找到了）
-        cd=cd.filter(function(v){ return v>=1&&v<=S.cfg.total&&!scan.ocr.map.has(v); });
+        // 已被别人占掉的编号不算候选。**看结果集而不只是读数**：推算/延伸出来的块
+        // 也算占住了这个号（用户：『173、198 都有了，怎么还有一处复核漏读』）。
+        cd=cd.filter(function(v){ return v>=1&&v<=S.cfg.total&&!scan.ocr.map.has(v)&&!set.has(v); });
         if(cd.length>=2){
           for(var sg2=-1; sg2<=1; sg2+=2){
             var px2=seed.x+ux*side*sg2, py2=seed.y+uy*side*sg2;
@@ -947,7 +948,7 @@ function recalcScan(){
       }
     });
     (scan.ocr.low||[]).forEach(function(r){            // 低置信检出：只问一句「是这个吗」
-      if(scan.ocr.map.has(r.idx)) return;
+      if(scan.ocr.map.has(r.idx)||set.has(r.idx)) return;   // 这号已经有主了：别再问
       var sd0=readingSide(r)||0; if(!sd0) return;
       weakCells.push({x:r.x,y:r.y,side:sd0,cands:[r.idx],src:"low",conf:r.conf});
     });
@@ -965,7 +966,7 @@ function recalcScan(){
         if(rr<1||cc<1||rr>S.rows||cc>S.cfg.cols) return;
         var q=rcToIdx(rr,cc); if(q>=1&&q<=S.cfg.total) ald.push(q);
       });
-      ald=ald.filter(function(v){ return !scan.ocr.map.has(v); });
+      ald=ald.filter(function(v){ return !scan.ocr.map.has(v)&&!set.has(v); });  // 同上有主即排除
       if(ald.length<1) return;
       var hit=0;
       for(var d2=0;d2<4;d2++){
@@ -1888,7 +1889,10 @@ function scanGaps(reads, inferredPos){
   for(var ii in inferredPos) occ.push([inferredPos[ii].x*k, inferredPos[ii].y*k]);
   var minD=S0*k*0.72, step=Math.max(4,Math.round(S0*k*0.28));
   var cand=[];
-  var tried=scan.gapTried||[];
+  /* 屏蔽名单 = 补漏读不出的位置 + 人工点「删掉这处提示」的位置。
+     以前只看 gapTried，于是**漏读的「?」删了又冒出来**（删除只写进 weakDrop）——
+     用户：「有一个复核漏读，没有办法删除」。 */
+  var tried=(scan.gapTried||[]).concat(scan.weakDrop||[]);
   var hitTried=function(ox,oy){
     for(var t=0;t<tried.length;t++){ if(Math.hypot(tried[t].x-ox, tried[t].y-oy)<S0*0.62) return true; }
     return false;
@@ -2552,20 +2556,16 @@ scanStage.addEventListener("pointerdown",function(e){
     }
     else if(scan.ocr && scan.ocr.map.size>=2){
       scanDrag.addPt=p;                                  // 点空白片 → 补一块
-      var kk=scan.W/scan.ocr.w, wc=null;
-      (scan.weakCells||[]).forEach(function(w){
-        if(wc) return;
-        if(Math.hypot(w.x*kk-p.x, w.y*kk-p.y) < Math.max(16,w.side*kk*0.8)) wc=w;
-      });
-      if(!wc) (scan.gaps||[]).forEach(function(g){      // 命中灰虚线「?」→ 落点对齐到片心
-        if(wc) return;
-        if(Math.hypot(g.x*kk-p.x, g.y*kk-p.y) < Math.max(16,g.side*kk*0.8)){
-          wc={x:g.x, y:g.y, side:g.side, cands:null};
-          scanDrag.addPt={x:g.x*kk, y:g.y*kk};
-        }
-      });
-      scanDrag.weak=wc;                                  // 命中二义位 → 带候选编号
+      var wh=weakHit(p);
+      if(wh){ scanDrag.weak=wh.w; scanDrag.addPt=wh.pt; } // 命中二义位/漏读位 → 对齐到片心
     }
+  }
+  /* 二义位 / 漏读位（「认不准」的黄虚线、灰虚线「?」）**任何模式下都能点** ——
+     用户要「不用切增删模式，移动的时候直接点」。只有真正命中提示才记 addPt，
+     所以移动模式下点空白处仍然是纯平移，不会弹出补块浮层。 */
+  else if(scan.calibrated && inside && scan.mode==="move" && scan.ocr && scan.ocr.map.size>=2){
+    var wh2=weakHit(p);
+    if(wh2){ scanDrag.weak=wh2.w; scanDrag.addPt=wh2.pt; }
   }
 });
 
@@ -2595,6 +2595,24 @@ scanStage.addEventListener("pointermove",function(e){
     scan.ox=scanDrag.ox+dx; scan.oy=scanDrag.oy+dy; layoutScanView();
   }
 });
+
+/* 命中「认不准/漏读」提示：返回 {w, pt}（pt 已换算到 scan 工作坐标，对齐到片心）。
+   二义位带 cands（几何上只可能是这几个之一），漏读位 cands=null。 */
+function weakHit(p){
+  if(!scan.ocr||!scan.ocr.w) return null;
+  var kk=scan.W/scan.ocr.w, wc=null;
+  (scan.weakCells||[]).forEach(function(w){
+    if(wc) return;
+    if(Math.hypot(w.x*kk-p.x, w.y*kk-p.y) < Math.max(16,w.side*kk*0.8)) wc=w;
+  });
+  if(!wc) (scan.gaps||[]).forEach(function(g){        // 命中灰虚线「?」
+    if(wc) return;
+    if(Math.hypot(g.x*kk-p.x, g.y*kk-p.y) < Math.max(16,g.side*kk*0.8)){
+      wc={x:g.x, y:g.y, side:g.side, cands:null};
+    }
+  });
+  return wc?{ w:wc, pt:{x:wc.x*kk, y:wc.y*kk} }:null;
+}
 
 function endScanPointer(e){
   scanPtr.delete(e.pointerId);
@@ -2641,8 +2659,9 @@ function endScanPointer(e){
       var q0=scanCellXY(idxToRC(d.cell));
       openPick(q0,e.clientX,e.clientY,true,null,null,{cell:d.cell});
     }
-  } else if(d.addPt && scan.mode==="edit"){
-    /* 增删模式点空白片 → 补编号（命中二义位/漏读位时带候选与「删掉这处提示」）。
+  } else if(d.addPt){
+    /* 点空白片 → 补编号（命中二义位/漏读位时带候选与「删掉这处提示」）。
+       移动模式下只有真正命中提示才会走到这里（见 scanDown），不必切到增删模式。
        散块模式下 scanHitIdx 只认「现有读数/推算位」，刚删掉的那块在照片上是空白的，
        会走到这里 —— 落点附近有已删除的编号时直接给「补回来」，不用重新输一遍。 */
     var dc=dropNear(d.addPt);
@@ -2748,6 +2767,8 @@ $("pickDel").addEventListener("click",function(){
   if(P.weak){
     if(!scan.weakDrop) scan.weakDrop=[];
     scan.weakDrop.push({x:P.weak.x, y:P.weak.y});
+    // 漏读位（灰虚线「?」）走的是 gapTried 那条屏蔽链，两份名单都写，删了就不会再冒出来
+    if(!P.weak.cands){ if(!scan.gapTried) scan.gapTried=[]; scan.gapTried.push({x:P.weak.x, y:P.weak.y}); }
     recalcScan(); drawScan(); updateScanStats();
     toast("已忽略这处「认不准」提示");
   }
