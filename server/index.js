@@ -14,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createStore } from "./store.js";
 import { attachWS } from "./ws.js";
+import { initOcr, ocrHealth, ocrProxy, shutdownOcr } from "./ocr.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -29,6 +30,15 @@ app.disable("x-powered-by");
 const server = createServer(app);
 const store = createStore(path.join(ROOT, "puzzle-data.json"));
 attachWS(server, store);          // WebSocket：/ws，与 HTTP 同端口
+
+/* ---- PP-OCR 高精度服务（8849）：服务端代管 + 同源代理 ----
+ * 页面统一访问 /ocrsvc/*（= 自己的源），由服务端转发到本机 127.0.0.1:8849。
+ * 这样局域网设备/手机打开页面不用再直连 127.0.0.1（那会连到它自己），
+ * 而且 ocr_server.py 不必对外开端口。服务端启动时会自己把 OCR 拉起来。 */
+app.get("/ocrsvc/health", ocrHealth(ROOT));
+app.post("/ocrsvc/ocr", express.raw({ type: "*/*", limit: "80mb" }), ocrProxy);
+app.options("/ocrsvc/*", function (req, res) { res.status(204).end(); });
+initOcr(ROOT);
 
 if (isProd) {
   if (!fs.existsSync(path.join(DIST, "index.html"))) {
@@ -120,4 +130,11 @@ server.listen(PORT, "0.0.0.0", function () {
   console.log("  本机访问：  http://127.0.0.1:" + PORT + "/");
   ips.forEach(function (ip) { console.log("  局域网访问：http://" + ip + ":" + PORT + "/"); });
   console.log("  数据文件：  " + store.dataFile + "（共 " + store.size + " 张图）");
+  console.log("  PP-OCR：    /ocrsvc/* 同源代理 → 127.0.0.1:" + (process.env.OCR_PORT || "8849") +
+    "（局域网设备同样可用）");
+});
+
+/* 收掉我们拉起的 OCR 子进程（外部的不管） */
+["exit", "SIGINT", "SIGTERM"].forEach(function (sig) {
+  process.on(sig, function () { shutdownOcr(); if (sig !== "exit") process.exit(0); });
 });

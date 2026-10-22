@@ -32,26 +32,47 @@ window.__autoBusy=function(){ return autoBusy; };                    // 同上�
 var GRP_TXT=["#6ec8ff","#ffb050","#d878ff","#78ffd0","#ff78b8","#d0ff5a","#8ca0ff","#ffdc5a"]; // 拼好组文字色
 var scanCanvas=$("scanCanvas"), scanCtx=null;
 
-/* ---- PP-OCR 高精度服务（可选，与标注台同一服务，127.0.0.1:8849）----
-   服务端已带 CORS；未启动时自动回退内置模板 OCR。 */
-var OSVC={ host:(function(){ try{ return localStorage.getItem("scanOsvcHost")||"http://127.0.0.1:8849"; }catch(err){ return "http://127.0.0.1:8849"; } })(),
-           ok:false, checking:false };
-function osvcBadge(){
-  var d=$("osvcDot"), st=$("osvcState");
-  if(!d) return;
-  d.style.background=OSVC.ok?"#3ddc84":"#3a4656";
-  st.textContent=OSVC.ok?"已连接":"未连接";
-  st.style.color=OSVC.ok?"var(--ok, #3ddc84)":"";
+/* ---- PP-OCR 高精度服务（可选，与标注台同一服务，本机 8849）----
+ * 页面走**自己的源** /ocrsvc/*（8848 服务端代理到本机 8849），不写死 127.0.0.1：
+ * 换了设备（局域网 IP / 手机）访问时 127.0.0.1 指的是那台设备自己，必然「未连接」。
+ * localStorage.scanOsvcHost 可强制指定别的地址（例如把 OCR 跑在另一台机器上）。 */
+function osvcDefaultHost(){
+  try{
+    var o=localStorage.getItem("scanOsvcHost");
+    if(o) return String(o).replace(/\/+$/,"");
+  }catch(err){}
+  if(location.protocol==="http:"||location.protocol==="https:") return location.origin+"/ocrsvc";
+  return "http://127.0.0.1:8849";      // 直接双击 index.html（file://）时才直连本机
 }
-function osvcProbe(){
+var OSVC={ host:osvcDefaultHost(), ok:false, checking:false, starting:false, tries:0 };
+function osvcBadge(){
+  var d=$("osvcDot"), st=$("osvcState"), box=$("osvcBadge");
+  if(!d) return;
+  d.style.background=OSVC.ok?"#3ddc84":(OSVC.starting?"#f0b13c":"#3a4656");
+  st.textContent=OSVC.ok?"已连接":(OSVC.starting?"启动中…":"未连接");
+  st.style.color=OSVC.ok?"var(--ok, #3ddc84)":(OSVC.starting?"#f0b13c":"");
+  if(box) box.title="PP-OCR 高精度识别服务 · 当前走 "+OSVC.host+
+    "（8848 服务端同源代理，局域网设备同样可用）。服务由 start-lan-server.bat 自动拉起；"+
+    "点此重新检测。未连接时自动回退内置模板 OCR。";
+}
+function osvcProbe(manual){
   if(OSVC.checking) return;
   OSVC.checking=true;
-  var ctl=new AbortController(), t=setTimeout(function(){ ctl.abort(); },1500);
-  fetch(OSVC.host+"/health",{signal:ctl.signal})
+  if(manual) OSVC.tries=0;
+  var ctl=new AbortController(), t=setTimeout(function(){ ctl.abort(); },2500);
+  fetch(OSVC.host+"/health",{signal:ctl.signal,cache:"no-store"})
     .then(function(r){ return r.json(); })
-    .then(function(j){ OSVC.ok=!!j.ok; })
-    .catch(function(){ OSVC.ok=false; })
-    .then(function(){ OSVC.checking=false; clearTimeout(t); osvcBadge(); });
+    .then(function(j){ OSVC.ok=!!(j&&j.ok); OSVC.starting=!!(j&&j.starting); })
+    .catch(function(){ OSVC.ok=false; OSVC.starting=false; })
+    .then(function(){
+      OSVC.checking=false; clearTimeout(t); osvcBadge();
+      // 服务是随 8848 一起拉起的，首轮 OCR 要加载模型（十几秒）：
+      // 没就绪就退避重试，别让徽标一直停在「未连接」等用户手点
+      if(!OSVC.ok && OSVC.tries<20){
+        OSVC.tries++;
+        setTimeout(function(){ osvcProbe(); }, OSVC.tries<8?1200:2500);
+      }
+    });
 }
 // "B-241"/"B241"/"B—241"/"7-793"（首字符非 A-D）→ {letter,digits}；纯数字不认（防噪声）
 function parseNumText(t){
@@ -1188,7 +1209,7 @@ $("bScan").addEventListener("click",function(){
   hideLocCard();
   $("ovScan").classList.add("on");
   scanHelpSync();               // 每次打开都回到「说明默认收起」
-  osvcProbe();                  // 探测 PP-OCR 服务状态
+  osvcProbe(true);              // 探测 PP-OCR 服务状态（手动开面板：重排重试次数）
   if(!scan.img){ resetScan(false); }
   else { drawScan(); }
   if(scan.review && scan.suspIdx && scan.suspIdx.size) startReview();  // 上次没审完：接着审
@@ -1199,8 +1220,8 @@ $("scanClose").addEventListener("click",function(){
   var rvp=$("scanRv"); if(rvp) rvp.style.display="none";   // 审查面板跟着收起（状态留着，回来接着审）
 });
 $("osvcBadge").addEventListener("click",function(){
-  osvcProbe();
-  toast(OSVC.ok?"OCR：PP-OCR 高精度（服务已连接）":"正在检测 PP-OCR 服务（127.0.0.1:8849）…");
+  osvcProbe(true);
+  toast(OSVC.ok?"OCR：PP-OCR 高精度（服务已连接）":"正在检测 PP-OCR 服务（"+OSVC.host+"）…");
 });
 $("bPickImg").addEventListener("click",function(){ $("fImg").click(); });
 $("fImg").addEventListener("change",function(e){

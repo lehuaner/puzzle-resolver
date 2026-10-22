@@ -9,6 +9,14 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    host: true
+    host: true,
+    // 单独跑 `vite` 时也把 /ocrsvc 代理到本机 OCR 服务（npm run dev 走 Express，用不到）
+    proxy: {
+      "/ocrsvc": {
+        target: "http://127.0.0.1:8849",
+        changeOrigin: true,
+        rewrite: function (p) { return p.replace(/^\/ocrsvc/, ""); }
+      }
+    }
   }
 });

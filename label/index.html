@@ -267,27 +267,40 @@ function pieceBoxes(){
 }
 
 /* ================= 高精度 OCR 服务（可选，RapidOCR） =================
-   label/start-ocr-server.bat 启动本机服务（127.0.0.1:8849）后自动启用；
-   未启动则回退内置模板 OCR。file:// 页面跨源 fetch 由服务端 CORS 放行。 */
-var OSVC={ host:"http://127.0.0.1:8849", ok:false, checking:false };
+   走页面自己的源 /ocrsvc/*（8848 服务端代理到本机 8849），所以 http 方式
+   （含局域网 IP / 手机）打开也能用；file:// 双击打开时退回直连 127.0.0.1:8849，
+   服务端 CORS 放行。服务由 start-lan-server.bat 自动拉起，无需手动开第二个窗口。 */
+var OSVC={ host:(function(){
+    if(location.protocol==="http:"||location.protocol==="https:") return location.origin+"/ocrsvc";
+    return "http://127.0.0.1:8849";
+  })(), ok:false, checking:false, tries:0 };
 function updateOcrBadge(){
   var d=$("ocrDot");
-  d.style.background=OSVC.ok?"var(--ok)":"#3a4656";
-  d.title=OSVC.ok?"高精度（RapidOCR 服务已连接）":"内置模板（未检测到 RapidOCR 服务）";
+  d.style.background=OSVC.ok?"var(--ok)":(OSVC.starting?"#f0b13c":"#3a4656");
+  d.title=OSVC.ok?"高精度（RapidOCR 服务已连接）":
+    (OSVC.starting?"高精度服务启动中（首次加载模型约十几秒）":
+     "内置模板（未检测到 RapidOCR 服务 "+OSVC.host+"）");
   $("ocrBadge").style.color=OSVC.ok?"var(--tx)":"var(--dim)";
 }
-function probeOcrSvc(){
+function probeOcrSvc(manual){
   if(OSVC.checking) return;
   OSVC.checking=true;
-  var ctl=new AbortController(), t=setTimeout(function(){ ctl.abort(); },1500);
-  fetch(OSVC.host+"/health",{signal:ctl.signal})
+  if(manual) OSVC.tries=0;
+  var ctl=new AbortController(), t=setTimeout(function(){ ctl.abort(); },2500);
+  fetch(OSVC.host+"/health",{signal:ctl.signal,cache:"no-store"})
     .then(function(r){ return r.json(); })
-    .then(function(j){ OSVC.ok=!!j.ok; })
-    .catch(function(){ OSVC.ok=false; })
-    .then(function(){ OSVC.checking=false; clearTimeout(t); updateOcrBadge(); });
+    .then(function(j){ OSVC.ok=!!(j&&j.ok); OSVC.starting=!!(j&&j.starting); })
+    .catch(function(){ OSVC.ok=false; OSVC.starting=false; })
+    .then(function(){
+      OSVC.checking=false; clearTimeout(t); updateOcrBadge();
+      if(!OSVC.ok && OSVC.tries<20){
+        OSVC.tries++;
+        setTimeout(function(){ probeOcrSvc(); }, OSVC.tries<8?1200:2500);
+      }
+    });
 }
 $("ocrBadge").addEventListener("click",function(){
-  probeOcrSvc();
+  probeOcrSvc(true);
   toast(OSVC.ok?"OCR：高精度（RapidOCR）":"正在检测 RapidOCR 服务…");
 });
 // "B-241"/"B241"/"B—241"/"7-793"（字母被照片边缘裁掉）→ {letter,digits}
