@@ -149,9 +149,13 @@ header{display:flex;align-items:center;gap:12px;padding:8px 14px;
   background:linear-gradient(180deg,#14263d,#101a27);border-top:1px solid #2c4a73}
 body.batch .batchbar{display:flex}
 body.batch .legend{display:none}
+/* .brow 在桌面用 display:contents 解包：布局仍是 [信息 | 4 操作键(右对齐) | 退出]，
+   窄屏媒体查询里改回真实 flex 行（信息+退出），四个操作键单独一行等宽网格 */
+.batchbar .brow{display:contents}
 .binfo{font-size:14px;font-weight:600;color:#9dc4ff;white-space:nowrap}
 .binfo b{color:#fff;font-size:17px;margin:0 3px}
-.bbtns{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap;justify-content:flex-end}
+.bbtns{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap;justify-content:flex-end;order:1}
+.batchbar .btn[data-act="exit"]{order:2}
 
 /* ---------- 浮层 ---------- */
 .ov{position:fixed;inset:0;background:rgba(4,7,12,.75);backdrop-filter:blur(6px);
@@ -363,4 +367,10 @@ body.locon .loccard{display:flex}
   /* 窄屏：顶栏按钮行可横向滑动（不显示滚动条），不再把右侧按钮裁掉 */
   header{overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch}
   header::-webkit-scrollbar{display:none}
+  /* 窄屏：批量条两行 —— 上行「信息 + 退出」，下行四个操作键等宽铺满（好按、不挤） */
+  .batchbar{flex-direction:column;align-items:stretch;gap:8px;padding:10px 12px}
+  .batchbar .brow{display:flex;flex:1;align-items:center;gap:10px}
+  .batchbar .btn[data-act="exit"]{margin-left:auto;height:34px;padding:0 13px;font-size:13px}
+  .bbtns{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-left:0;flex-wrap:nowrap}
+  .bbtns .btn{height:44px;padding:0 4px;font-size:13.5px}
 }
