@@ -2,9 +2,10 @@ import { S } from "./store.js";
 import { $, toast, vibrate } from "./dom.js";
 import { fmt, idxToRC, zoneOf, zoneLetter } from "./coords.js";
 import { mainComp, promoteConnected } from "./grid.js";
-import { paint, afterChange, applyPan } from "./board.js";
+import { paint, afterChange, focusSet } from "./board.js";
 import { pushUndo } from "./interact.js";
 import { markChange } from "./sync.js";
+import { beaconShow, beaconHide } from "./beacon.js";
 
 /* ================= 摆放引导 =================
    「引导摆放」不再一次性把识别结果全铺到棋盘（那样一进引导就已经全绿了，
@@ -19,30 +20,10 @@ import { markChange } from "./sync.js";
    状态放 S.guideActive（共享 store），避免与 interact.js 循环依赖；
    照片位置由 scan.js 通过 setGuideProviders 注入（避免 scan↔guide 循环 import）。 */
 
-var G={ q:[], k:0, cur:[], done:0, blinkT:null, on:false };
+var G={ q:[], k:0, cur:[], done:0 };
 
-/* 当前目标持续闪烁：亮的那一相**就是图例里的「进行中」**（绿底呼吸闪 breath），
-   灭的那一相退回块本来的颜色，位置靠一直挂着的一圈绿色描边（.gcur::after）钉住。
-   单块闪一块、整片闪整片；点「放好了 / 跳过」后 showCur 会给新目标重新挂上。 */
-function startBlink(){
-  stopBlink();
-  G.on=true;
-  (G.cur||[]).forEach(function(i){ if(S.cells[i]) S.cells[i].classList.add("gblink"); });
-  G.blinkT=setInterval(function(){
-    if(!S.guideActive){ stopBlink(); return; }
-    G.on=!G.on;
-    (G.cur||[]).forEach(function(i){
-      var el=S.cells[i]; if(!el) return;
-      if(G.on) el.classList.add("gblink"); else el.classList.remove("gblink");
-    });
-  }, 620);
-}
-function stopBlink(){
-  if(G.blinkT){ clearInterval(G.blinkT); G.blinkT=null; }
-  (G.cur||[]).forEach(function(i){
-    var el=S.cells[i]; if(el) el.classList.remove("gblink");
-  });
-}
+/* 当前目标的高亮/闪烁交给 beacon.js（和「找点」用同一套：进行中绿底 + 620ms 硬闪）。
+   单块亮一块、整片亮整片；点「放好了 / 跳过」后 showCur 换目标。 */
 
 var infoProv=null, drawProv=null;
 /* scan.js 注入：infoFn() → {grpOf:{idx:组号}}；drawFn(canvas, ids) → 画出照片小窗 */
@@ -140,39 +121,6 @@ function buildQueue(targets){
   return items;
 }
 
-/* 目标缩放：让这一片在屏幕上**按比例**占住一个稳定的位置——
-   长短边都塞进「可视区短边的 42%」，单块再放大一点（1.0~2.6 之间夹住），
-   然后居中到**没被浮条盖住的那块可视区**。这样单块不会只剩一个小点、
-   整片也不会撑出屏幕外；目标也不会被底部浮条压到。 */
-function focusItem(ids){
-  var W=S.wrap.clientWidth, H=S.wrap.clientHeight;
-  if(!W||!H) return;
-  var p=idxToRC(ids[0]);
-  var minC=p.col, maxC=p.col, minR=p.row, maxR=p.row;
-  ids.forEach(function(i){
-    var q=idxToRC(i);
-    if(q.col<minC) minC=q.col; if(q.col>maxC) maxC=q.col;
-    if(q.row<minR) minR=q.row; if(q.row>maxR) maxR=q.row;
-  });
-  // 浮条压在画面底部：把「可视高度」扣掉被盖住的那截，目标居中到剩下的区域
-  var visH=H, gb=$("guideBar");
-  try{
-    if(gb && gb.getBoundingClientRect){
-      var wr=S.wrap.getBoundingClientRect(), br=gb.getBoundingClientRect();
-      var cover=wr.bottom-br.top;
-      if(cover>0) visH=Math.max(H*0.45, H-Math.min(cover,H*0.55));
-    }
-  }catch(err){}
-  var bw=(maxC-minC)*S.step+S.cellSize, bh=(maxR-minR)*S.step+S.cellSize;
-  var box=Math.min(W, visH)*0.42;
-  var s=Math.min(box/bw, box/bh);
-  s=Math.max(0.55, Math.min(2.6, s));   // 单块放大到 2.6 封顶，整片最多缩到 0.55（再小字就看不清）
-  S.scale=s;
-  var cx=((minC-1)*S.step+bw/2)*s, cy=((minR-1)*S.step+bh/2)*s;
-  S.tx=W/2-cx; S.ty=visH/2-cy;
-  applyPan(true);
-}
-
 /* 浮条左边的照片小窗：把目标块（组）在**刚识别的那张照片**上的位置圈出来 */
 function drawPhoto(ids){
   var cv=$("gdPic"); if(!cv) return;
@@ -182,11 +130,8 @@ function drawPhoto(ids){
 }
 
 function clearGcur(){
-  stopBlink();
-  (G.cur||[]).forEach(function(i){
-    var el=S.cells[i]; if(!el) return;
-    el.classList.remove("gcur"); el.classList.remove("gblink");
-  });
+  beaconHide();
+  G.cur=[];
 }
 
 function showCur(){
@@ -194,7 +139,7 @@ function showCur(){
   var it=G.q[G.k];
   if(!it) return;
   G.cur=it.ids.slice();
-  it.ids.forEach(function(i){ if(S.cells[i]) S.cells[i].classList.add("gcur"); });
+  beaconShow(G.cur);                  // 亮起来并按 620ms 闪（进行中色），直到点下一步
   if(it.ids.length===1){
     var i0=it.ids[0], p=idxToRC(i0);
     $("gdNum").textContent=fmt(i0);
@@ -207,8 +152,7 @@ function showCur(){
   }
   $("gdStep").textContent=(G.k+1)+"/"+G.q.length+(G.done?" · 已放 "+G.done:"");
   drawPhoto(it.ids);
-  focusItem(it.ids);                  // 按视口比例缩放 + 居中，突出目标
-  startBlink();                       // 闪到用户点下一步为止
+  focusSet(it.ids,{keepDone:true});    // 与「找点」同一套：按比例缩放 + 留住一块已完成的片
 }
 
 function finishGuide(){

@@ -85,13 +85,7 @@ header{display:flex;align-items:center;gap:12px;padding:8px 14px;
 .cell.sel{box-shadow:0 0 0 3px var(--accent),0 0 16px rgba(63,140,255,.6);
   z-index:3;border-radius:calc(var(--cr,6px)*1.4)}
 .cell.dim{opacity:.18}
-.cell.found{opacity:1!important;overflow:visible;z-index:5}
-.cell.found::after{content:"";position:absolute;inset:0;border-radius:inherit;
-  border:3px solid var(--found);pointer-events:none;z-index:6;
-  box-shadow:0 0 0 3px rgba(255,212,94,.3),0 0 24px 8px rgba(255,212,94,.65),
-             inset 0 0 16px rgba(255,212,94,.75);
-  animation:foundPulse .58s ease-in-out infinite alternate}
-@keyframes foundPulse{from{opacity:.3;transform:scale(.82)}to{opacity:1;transform:scale(1.12)}}
+/* 找点/引导的目标高亮统一走 .gcur + .gblink（见下方「引导当前目标」），原来那套金色 found 描边已退役 */
 /* 识别结果区域高亮：只画外沿边框（相邻高亮块共边不画），不规则形状连成一条完整轮廓 */
 .cell.hl{opacity:1!important;overflow:visible;z-index:5}
 .cell.hl::after{content:"";position:absolute;inset:0;border-radius:2px;
@@ -355,8 +349,8 @@ body.guideon .guidebar{display:flex}
 .gd-btns button:active{background:#28331d;transform:scale(.96)}
 .gd-btns .okb{background:#2e5c22;border-color:#5f9c3f;color:#e6ffd8}
 .gd-btns .gd-x{width:38px;padding:0;color:#8a9a76}
-/* 引导当前目标：亮的那一相直接用图例「进行中」那套（绿底 + breath 呼吸闪） */
-.cell.gcur{z-index:6;overflow:visible}   /* 必须：否则下面那圈描边被 .cell 的 overflow:hidden 裁掉 */
+/* 引导当前目标 / 找点找到的块：亮的那一相直接用图例「进行中」那套（绿底 + breath 呼吸闪） */
+.cell.gcur{z-index:6;overflow:visible;opacity:1!important}   /* overflow:否则下面那圈描边被 .cell 的 overflow:hidden 裁掉 */
 /* 位置钉住：一圈细绿描边，灭相也一直在，不会看着目标消失 */
 .cell.gcur::after{content:"";position:absolute;inset:-2px;border:2px solid rgba(120,255,190,.9);
   border-radius:7px;pointer-events:none;box-shadow:0 0 10px rgba(90,255,170,.55)}

@@ -2,9 +2,10 @@ import { S } from "./store.js";
 import { $, toast, vibrate } from "./dom.js";
 import { fmt, idxToRC, rcToIdx, zoneOf, zoneLetter, zoneCount } from "./coords.js";
 import { neighborKind, promoteConnected } from "./grid.js";
-import { centerOnIdx, setView, placeMinimap, paint, afterChange } from "./board.js";
+import { focusSet, setView, placeMinimap, paint, afterChange } from "./board.js";
 import { pushUndo } from "./interact.js";
 import { markChange } from "./sync.js";
+import { beaconShow, beaconHide } from "./beacon.js";
 
 /* ================= 找点 ================= */
 var fZone="all", fState="all";
@@ -94,13 +95,16 @@ export function runSearch(){
   box.innerHTML=html;
 }
 
-var foundTimer=null;
+/* 找到点之后的高亮：与「引导摆放」同一套 —— 亮的那一相是图例里的「进行中」
+   （绿底呼吸闪），灭相退回真实状态色，位置靠常驻绿描边钉住。9 秒后自动收掉。
+   引导进行中时不抢它的目标（同一时刻只能有一组高亮）。 */
+var beaconTimer=null;
 export function flashFound(i){
-  var el=S.cells[i]; if(!el) return;
-  el.classList.remove("found"); void el.offsetWidth; el.classList.add("found");
-  clearTimeout(el.__ft);
-  el.__ft=setTimeout(function(){
-    el.classList.remove("found");
+  if(S.guideActive) return;
+  clearTimeout(beaconTimer);
+  beaconShow([i]);
+  beaconTimer=setTimeout(function(){
+    beaconHide();
     placeMinimap();
   },9000);
   placeMinimap();
@@ -151,18 +155,17 @@ export function locate(i){
     autoPend=true;
   }
 
+  // 先亮定位卡再去聚焦：focusSet 要量它盖住了画面底部多少，才能把目标居中到没被压住的地方
+  showLocCard(i);
   if(needSwitch){
-    setTimeout(function(){ centerOnIdx(i,true); flashFound(i); },60);
+    setTimeout(function(){ focusSet([i]); flashFound(i); },60);
   } else {
-    var W=S.wrap.clientWidth,H=S.wrap.clientHeight,margin=S.cellSize*1.5;
-    var cx=S.tx+(p.col-1)*S.step+S.cellSize/2, cy=S.ty+(p.row-1)*S.step+S.cellSize/2;
-    if(!(cx>margin&&cx<W-margin&&cy>margin&&cy<H-margin)) centerOnIdx(i,true);
+    focusSet([i]);
     flashFound(i);
   }
   closeSearch();
   if(autoPend) toast(fmt(i)+(kind.lone?" 挨着孤片区 · ":" 不挨着已拼区域 · ")+"已标为孤片待定");
   else toast(fmt(i)+" · "+zoneLetter(zoneOf(i))+"区 第"+p.col+"列 第"+p.row+"行");
-  showLocCard(i);
   vibrate(20);
 }
 
@@ -192,7 +195,7 @@ $("locCard").addEventListener("click",function(e){
   // 点左边编号区：重新居中并再闪一次
   var m=e.target.closest?e.target.closest(".lc-main"):null;
   if(m){
-    if(locIdx){ centerOnIdx(locIdx,true); flashFound(locIdx); vibrate(15); }
+    if(locIdx){ focusSet([locIdx]); flashFound(locIdx); vibrate(15); }
     return;
   }
   var b=e.target.closest?e.target.closest("button"):null; if(!b) return;

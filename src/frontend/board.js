@@ -134,6 +134,78 @@ export function centerOnSet(list,anim){
   applyPan(anim!==false);
 }
 
+// 底部浮卡（引导浮条 / 定位卡）盖住了画面底部多少：聚焦时要把这截扣掉
+function bottomInset(H){
+  var cover=0;
+  try{
+    var wr=S.wrap.getBoundingClientRect();
+    ["guideBar","locCard"].forEach(function(id){
+      var el=document.getElementById(id); if(!el) return;
+      if(window.getComputedStyle(el).display==="none") return;
+      var c=wr.bottom-el.getBoundingClientRect().top;
+      if(c>cover) cover=c;
+    });
+  }catch(err){}
+  if(!(cover>0)) return 0;
+  return Math.min(cover, H*0.55);
+}
+
+/* 目标聚焦（找点 / 摆放引导共用同一套）：
+   · 缩放按视口比例算——目标包围盒的长边占**可视区**短边的 42%，夹在 SCALE_MIN~2.6；
+   · 但要保证**至少一块已完成(1)的片还在画面里**（靠缩小实现，不靠平移），
+     否则用户放大到满屏一块、完全不知道自己相对整图在哪；最近的那块实在装不下
+     （离得太远，缩到下限也不行）时退一步：把目标与它的中点居中，两边都露一半；
+   · 居中到扣掉底部浮卡之后的可视区中央，目标不会被浮条/定位卡压住。 */
+export function focusSet(list,opt){
+  if(!list||!list.length) return;
+  var W=S.wrap.clientWidth, H=S.wrap.clientHeight;
+  if(!W||!H) return;
+  var o=opt||{};
+  var minC=1e9,maxC=0,minR=1e9,maxR=0;
+  for(var k=0;k<list.length;k++){
+    var p=idxToRC(list[k]);
+    if(p.col<minC)minC=p.col; if(p.col>maxC)maxC=p.col;
+    if(p.row<minR)minR=p.row; if(p.row>maxR)maxR=p.row;
+  }
+  var bw=(maxC-minC)*S.step+S.cellSize, bh=(maxR-minR)*S.step+S.cellSize;
+  var visH=Math.max(H*0.45, H-bottomInset(H));
+  var box=Math.min(W, visH)*0.42;
+  var s=Math.min(box/bw, box/bh);
+  s=Math.max(0.55, Math.min(2.6, s));   // 单块放大到 2.6 封顶，整片最多缩到 0.55
+
+  var cxb=(minC-1)*S.step+bw/2, cyb=(minR-1)*S.step+bh/2;   // 目标中心（板坐标，未缩放）
+  var near=null;
+  if(o.keepDone!==false){
+    var inSet=new Set(list), best=Infinity;
+    for(var i=1;i<=S.cfg.total;i++){
+      if(S.states[i]!==1 || inSet.has(i)) continue;
+      var q=idxToRC(i);
+      var dx=((q.col-1)*S.step+S.cellSize/2)-cxb, dy=((q.row-1)*S.step+S.cellSize/2)-cyb;
+      var d2=dx*dx+dy*dy;
+      if(d2<best){ best=d2; near={dx:dx,dy:dy}; }
+    }
+  }
+  if(near){
+    var mx=Math.max(40,W/2-30), my=Math.max(40,visH/2-30), need=Infinity;
+    if(Math.abs(near.dx)>mx) need=Math.min(need, mx/Math.abs(near.dx));
+    if(Math.abs(near.dy)>my) need=Math.min(need, my/Math.abs(near.dy));
+    /* 缩一点就够 → 缩到刚好把那块已完成也装进来；要缩太多（离得远）→ 最多缩到 0.3 就停，
+       剩下的差额交给下面的「让位」平移，别把目标缩成一个看不清的小点 */
+    var FLOOR=0.3;
+    if(need<Infinity && need<s) s=Math.max(FLOOR, need);
+    if(Math.abs(near.dx)*s>mx || Math.abs(near.dy)*s>my){
+      /* 还是装不下：目标朝反方向让出「目标与那块已完成的中点」那段距离，
+         但让位量按**屏幕像素**封顶，保证目标自己不会被推出画面 */
+      var capBx=Math.max(0,W/2-70)/s, capBy=Math.max(0,visH/2-70)/s;
+      cxb+=Math.min(Math.abs(near.dx)/2, capBx)*(near.dx<0?-1:1);
+      cyb+=Math.min(Math.abs(near.dy)/2, capBy)*(near.dy<0?-1:1);
+    }
+  }
+  S.scale=s;
+  S.tx=W/2-cxb*s; S.ty=visH/2-cyb*s;
+  applyPan(o.anim!==false);
+}
+
 // 回到初始：1:1 尺寸，装得下就居中，装不下就从左上角开始
 export function resetView(anim){
   S.scale=1;
@@ -229,7 +301,8 @@ function overlap(a,b){
   return !(a.x+a.w<b.x || b.x+b.w<a.x || a.y+a.h<b.y || b.y+b.h<a.y);
 }
 export function placeMinimap(){
-  var founds=document.querySelectorAll(".cell.found");
+  // 找点的高亮用 .gcur（与引导同一套「进行中」闪烁），这里一起避让
+  var founds=document.querySelectorAll(".cell.gcur");
   var order=["br","bl","tl"];   // 右上角被缩放工具条占用
   if(founds.length===0){ setMmCorner("br",false); return; }
   var wr=S.wrap.getBoundingClientRect();
