@@ -2906,7 +2906,9 @@ export function cancelPick(){
 
 /* ---- 引导浮条的两个注入口（main.js 接线，避免 scan↔guide 循环 import）---- */
 
-/* 哪些块其实同属一个「拼好组」：引导里一组算一条，不用一块一块走 */
+/* 哪些块其实同属一个「拼好组」。引导排队已经**不用**它了 ——
+   现在一步一块，整与整的划分走网格 4 邻（guide.js 的 buildQueue）。
+   留着是因为 main.js 还在接线，删要连它一起改。 */
 export function scanGuideInfo(){
   var grpOf={};
   if(scan.grpMap){ for(var k in scan.grpMap){ if(scan.grpMap[k]!=null) grpOf[k]=scan.grpMap[k]; } }
@@ -2916,11 +2918,69 @@ export function scanGuideInfo(){
   return { grpOf:grpOf, nGroups:(scan.groups?scan.groups.length:0), block:!!scan.blockMode };
 }
 
-/* 照片小窗 = **整张输入照片 + 目标所在位置**（地图思路：先看全貌，再找钉子）。
+/* 照片小窗 = **整张输入照片 + 当前这一片的位置**（地图思路：先看全貌，再找钉子）。
    以前是裁目标周围的一小块——只看到局部，看不出这块在整张照片的哪个角落，
    换一条目标时画面整块跳走，完全没有"我进行到哪儿了"的感觉。
    现在：整图按 contain 铺进小窗（**不裁剪、不转正/不旋转**，保持拍下来的原始方向），
-   其余压暗、目标那一小块原样重画提亮，再套金色框 + 每块中心一个点。 */
+   其余压暗、当前这一片原样重画提亮，再套金色框 + 中心点 + 编号小牌。
+   一步一块（见 guide.js），所以钉的就是**具体哪一片**：
+     · 已经放到棋盘上的块 → 涂成照片的背景色（桌面/地板）。用户点一次「放好了」，
+       预览上就少一块，进度一眼看得出来，也不会跟当前目标抢注意力；
+     · 当前这一片 → 按片子的实际朝向画旋转方框，对着形状也能认出是哪一块。 */
+var DIM_A=0.46, DIM_RGB=[6,10,8];
+/* 照片的「背景色」＝桌面/地板：取最外圈一圈像素的中位色（那一片不会有拼图）。
+   同一张图只算一次（引导里每一步都会重画小窗）。 */
+var bgCache={key:null,c:[26,30,24]};
+function photoBg(){
+  var key=scan.img?(scan.img.src||(scan.img.width+"x"+scan.img.height)):"";
+  if(bgCache.key===key) return bgCache.c;
+  var c=[26,30,24];
+  try{
+    var n=48;
+    var cv=document.createElement("canvas"); cv.width=n; cv.height=n;
+    var cx=cv.getContext("2d");
+    cx.drawImage(scan.img,0,0,n,n);
+    var d=cx.getImageData(0,0,n,n).data, arr=[];
+    for(var i=0;i<d.length;i+=4){
+      var q=i>>2, x=q%n, y=(q/n)|0;
+      if(x>1&&x<n-2&&y>1&&y<n-2) continue;      // 只留最外一圈＝原图的边框
+      var l=(d[i]+d[i+1]+d[i+2])/3;
+      if(l>12&&l<215) arr.push([d[i],d[i+1],d[i+2]]);
+    }
+    if(arr.length>12){
+      arr.sort(function(a,b){ return (a[0]+a[1]+a[2])-(b[0]+b[1]+b[2]); });
+      c=arr[arr.length>>1];
+    }
+  }catch(err){}
+  bgCache.key=key; bgCache.c=c;
+  return c;
+}
+/* 压暗之后的背景色：跟小窗里被压暗的桌面同色，涂上去才「溶」得进去，不像一块补丁 */
+function dimBg(){
+  var c=photoBg();
+  return "rgb("+Math.round(c[0]*(1-DIM_A)+DIM_RGB[0]*DIM_A)+","
+              +Math.round(c[1]*(1-DIM_A)+DIM_RGB[1]*DIM_A)+","
+              +Math.round(c[2]*(1-DIM_A)+DIM_RGB[2]*DIM_A)+")";
+}
+/* 已放到棋盘上的块 → 涂成背景色。targets 是当前要高亮的那几片，不涂。 */
+function erasePlaced(ctx,ox,oy,dw,dh,s,k,targets){
+  var tset={}; (targets||[]).forEach(function(i){ tset[i]=1; });
+  var bg=dimBg(), n=0;
+  for(var i=1;i<=S.cfg.total;i++){
+    if(S.states[i]===0) continue;          // 未拼：留着
+    if(tset[i]) continue;                  // 当前目标：要高亮，别涂
+    var p=photoPosOf(i); if(!p) continue;
+    var X=ox+p.x*k*s, Y=oy+p.y*k*s, sd=(p.s||0)*k*s;
+    if(sd<1.5) continue;                   // 缩到小窗里还不足两像素：涂了也看不见
+    ctx.save();
+    ctx.translate(X,Y); ctx.rotate(p.ang||0);   // 跟扫描页画读数框同一个朝向约定
+    ctx.fillStyle=bg;
+    ctx.fillRect(-sd/2,-sd/2,sd,sd);
+    ctx.restore();
+    if(++n>800) break;                     // 兜底：别为一张小窗跑不完
+  }
+  return n;
+}
 export function scanGuideDraw(cv, ids){
   var ctx=cv.getContext("2d"), W=cv.width, H=cv.height;
   ctx.clearRect(0,0,W,H);
@@ -2934,18 +2994,18 @@ export function scanGuideDraw(cv, ids){
   (ids||[]).forEach(function(i){
     var p=photoPosOf(i); if(!p) return;
     if(!p.s) p.s=Math.min(scan.ocr.w,scan.ocr.h)/18;
-    pts.push({ x:p.x*k, y:p.y*k, s:p.s*k });
+    pts.push({ i:i, x:p.x*k, y:p.y*k, s:p.s*k, ang:p.ang||0 });
   });
-  if(!pts.length) return true;                  // 整图照画，只是这一条没有可钉的位置
+  if(!pts.length){ erasePlaced(ctx,ox,oy,dw,dh,s,k,null); return true; }  // 整图照画，只是这一块没有可钉的位置
   var bx=1e9, by=1e9, ex=-1e9, ey=-1e9;
-  pts.forEach(function(p){ var hs=(p.s||0)*0.6;
+  pts.forEach(function(p){ var hs=(p.s||0)*0.62;
     if(p.x-hs<bx) bx=p.x-hs; if(p.y-hs<by) by=p.y-hs;
     if(p.x+hs>ex) ex=p.x+hs; if(p.y+hs>ey) ey=p.y+hs; });
   function tx(x){ return ox+x*s; } function ty(y){ return oy+y*s; }
   var wx0=tx(bx), wy0=ty(by), wx1=tx(ex), wy1=ty(ey);
-  /* 整图缩到小窗后，一块拼图只剩两三个像素 —— 给标记一个最小可视尺寸，
+  /* 整图缩到小窗后，一块拼图只剩三五个像素 —— 给标记一个最小可视尺寸，
      钉得住（看得见在哪），又不至于盖住半张图。 */
-  var MIN=Math.max(14, Math.min(dw,dh)*0.20);
+  var MIN=Math.max(18, Math.min(dw,dh)*0.14);
   if(wx1-wx0<MIN){ var cx=(wx0+wx1)/2; wx0=cx-MIN/2; wx1=cx+MIN/2; }
   if(wy1-wy0<MIN){ var cy=(wy0+wy1)/2; wy0=cy-MIN/2; wy1=cy+MIN/2; }
   wx0=Math.max(ox,wx0); wy0=Math.max(oy,wy0);
@@ -2956,14 +3016,36 @@ export function scanGuideDraw(cv, ids){
   var sx0=Math.max(0,ix0), sy0=Math.max(0,iy0);
   var sw=Math.min(iw,ix0+isw)-sx0, sh=Math.min(ih,iy0+ish)-sy0;
   if(sw>1&&sh>1) ctx.drawImage(scan.img, sx0,sy0,sw,sh, tx(sx0),ty(sy0), sw*s, sh*s);
-  ctx.strokeStyle="rgba(255,214,80,.98)"; ctx.lineWidth=Math.max(1.6,W*0.018);
-  ctx.strokeRect(wx0,wy0,wx1-wx0,wy1-wy0);
-  var pad=Math.max(3,W*0.045);
-  ctx.strokeStyle="rgba(255,214,80,.40)"; ctx.lineWidth=Math.max(1,W*0.010);
-  ctx.strokeRect(wx0-pad,wy0-pad,(wx1-wx0)+pad*2,(wy1-wy0)+pad*2);
+  // 当前这一片：按片子朝向的旋转方框（对着形状也能认）+ 外圈 + 中心点
+  pts.forEach(function(p){
+    var sd=p.s*s; if(sd<10) sd=10;
+    ctx.save();
+    ctx.translate(tx(p.x),ty(p.y)); ctx.rotate(p.ang);
+    ctx.strokeStyle="rgba(255,214,80,.98)"; ctx.lineWidth=Math.max(1.6,W*0.014);
+    ctx.strokeRect(-sd/2,-sd/2,sd,sd);
+    ctx.strokeStyle="rgba(255,214,80,.34)"; ctx.lineWidth=Math.max(1,W*0.008);
+    ctx.strokeRect(-sd/2-3,-sd/2-3,sd+6,sd+6);
+    ctx.restore();
+  });
   pts.forEach(function(p){
     ctx.fillStyle="rgba(255,233,168,.95)";
-    ctx.beginPath(); ctx.arc(tx(p.x),ty(p.y),Math.max(1.4,W*0.013),0,6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(tx(p.x),ty(p.y),Math.max(1.8,W*0.013),0,6.2832); ctx.fill();
   });
+  // 编号小牌：预览自己就说出「这是哪一片」，不用只靠框猜。
+  // 整组一步时组里可能有几十片，小窗只有两百像素宽 —— 只标前三片，其余靠金框和浮条文案。
+  pts.slice(0,3).forEach(function(p){
+    var t=fmt(p.i), fs=Math.max(11,Math.round(W*0.105));
+    ctx.font="700 "+fs+"px system-ui,sans-serif";
+    var tw=ctx.measureText(t).width, ph=Math.round(fs*1.3), pw=Math.round(tw+fs*0.5);
+    var px=tx(p.x)+p.s*s*0.62+4, py=ty(p.y)-ph/2;
+    px=Math.min(Math.max(2,px), W-pw-2); py=Math.min(Math.max(2,py), H-ph-2);
+    ctx.fillStyle="rgba(10,14,9,.84)"; ctx.fillRect(px,py,pw,ph);
+    ctx.strokeStyle="rgba(255,214,80,.55)"; ctx.lineWidth=1; ctx.strokeRect(px,py,pw,ph);
+    ctx.fillStyle="rgba(255,226,140,.98)";
+    ctx.textBaseline="middle"; ctx.textAlign="left";
+    ctx.fillText(t, px+fs*0.25, py+ph/2+0.5);
+  });
+  // 最后涂掉已放好的块：放在压暗之后涂，颜色用「压暗后的背景色」→ 溶进桌面，不是一块补丁
+  erasePlaced(ctx,ox,oy,dw,dh,s,k,ids);
   return true;
 }
