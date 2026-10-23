@@ -43,7 +43,9 @@ function guideInfo(){
      · **整**＝网格 4 邻连起来的目标块。整与整之间按「由整到散、由近到远」排：
        能连上已拼区的先 → 整大的先（由整到散）→ 离主片区近的先 → 编号小；
      · **整内部**按用户要的「先组再独立、先多再少」：OCR 认得出的**拼好组**整组算一步
-       （「已经拼成组的，无需一步一步引导」），组大的在前；剩下的独立片才一片一步。
+       （「已经拼成组的，无需一步一步引导」），组大的在前；剩下的独立片一片一步，
+       **贴着已拼的贪心往外长**（见 growSolo）——「先放靠近主区的块，再放离主区远的块；
+       为了组成连片，也应该先放靠近连片的块」。
    步长曾整片算一步，用户：「只要是连起来的直接算作一步，图片预览也只框选范围，
    而不是告诉你具体哪一片」—— 那说的是**没组的散片也被合成一步**；
    有组的组仍然整组走，只是预览要把组里每一片都钉出来。 */
@@ -91,30 +93,27 @@ function buildQueue(targets){
       a.forEach(function(i){ var p=idxToRC(i); c2+=p.col; r2+=p.row; });
       return main.length?Math.hypot(c2/a.length-mc, r2/a.length-mr):0;
     }
-    /* 整内部：先组（大组在前）再独立片 —— 用户「先组再独立，先多再少」 */
+    /* 整内部：组整组一步，先多再少（用户「先组再独立，先多再少」）；
+       独立片的次序要到 growOrder 里才知道「那时已经拼了什么」，所以这里只收集不排序。 */
     var byGrp={}, solo=[];
     ids.forEach(function(i){
       var g=grpOf[i];
       if(g!=null) (byGrp[g]=byGrp[g]||[]).push(i);
       else solo.push(i);
     });
-    var subs=[];
+    var grpSubs=[];
     Object.keys(byGrp).forEach(function(g){
       var a=byGrp[g].slice().sort(function(x,y){ return x-y; });
-      subs.push({ ids:a, isGrp:true, n:a.length, head:a[0], dist:dOf(a) });
+      grpSubs.push({ ids:a, isGrp:true, n:a.length, head:a[0], dist:dOf(a) });
     });
-    solo.forEach(function(i){
-      var p=idxToRC(i);
-      subs.push({ ids:[i], isGrp:false, n:1, head:i,
-                  dist: main.length?Math.hypot(p.col-mc,p.row-mr):0 });
-    });
-    subs.sort(function(a,b){
-      if(a.isGrp!==b.isGrp) return a.isGrp?-1:1;   // 先组再独立
+    grpSubs.sort(function(a,b){
       if(a.n!==b.n) return b.n-a.n;                // 先多再少
       if(a.dist!==b.dist) return a.dist-b.dist;    // 由近到远
       return a.head-b.head;
     });
-    wholes.push({ ids:ids.slice().sort(function(x,y){ return x-y; }), subs:subs,
+    solo.sort(function(a,b){ return a-b; });
+    wholes.push({ ids:ids.slice().sort(function(x,y){ return x-y; }),
+                  grpSubs:grpSubs, solo:solo,
                   n:ids.length, cd:cd, head:Math.min.apply(null,ids) });
   });
   return growOrder(wholes);
@@ -126,10 +125,17 @@ function buildQueue(targets){
         里面再按 整大 → 离主片区近 → 编号小；
      ② 全都接不上 → 按 整大 → 近 → 编号小 另起一个整（由整到散、由近到远）。 */
 function growOrder(wholes){
-  var done=new Set();
+  /* 「已拼的」＝棋盘上原有的 1/3/4 **减去这一轮的目标**。
+     目标里可能有上一轮应用时被标「待定(3)/孤片(4)」的块 —— 它们虽然摆在棋盘上，
+     但这一轮还要重新引导；若把它们算进已拼集，growSolo 的「剩余候选」过滤会把它们
+     静默丢掉、整级「能连上」判断也会被自己骗到。 */
+  var tgt=new Set();
+  wholes.forEach(function(w){ w.ids.forEach(function(i){ tgt.add(i); }); });
+  var done=new Set(), doneRC=[], rcC={};
+  function rcOf(i){ var v=rcC[i]; if(!v){ v=idxToRC(i); rcC[i]=v; } return v; }
   for(var k=1;k<=S.cfg.total;k++){
     var st=S.states[k];
-    if(st===1||st===3||st===4) done.add(k);
+    if((st===1||st===3||st===4) && !tgt.has(k)){ done.add(k); doneRC.push(rcOf(k)); }
   }
   var left=wholes.slice(), out=[];
 
@@ -159,13 +165,53 @@ function growOrder(wholes){
     var p=pickIn(function(w){ return touches(w,done); });   // ① 能连上已拼区的先
     if(p<0) p=pickIn(null);                                 // ② 接不上：由整到散、由近到远另起一个
     var w=left.splice(p,1)[0];
-    out.push(w);
-    w.ids.forEach(function(i){ done.add(i); });
+    // ① 组：已经拼成组的整组一步（buildQueue 已按「先多再少」排好）
+    w.grpSubs.forEach(function(s){
+      out.push(s);
+      s.ids.forEach(function(i){ done.add(i); doneRC.push(rcOf(i)); });
+    });
+    // ② 独立片：一片一步，贴着已拼的贪心往外长（这时候才知道「已经拼了什么」）
+    growSolo(w.solo, done, doneRC, out, rcOf);
   }
-  // 整内部顺序在 buildQueue 里已经按「先组再独立、先多再少」排好，这里直接展开
-  var q=[];
-  out.forEach(function(w){ w.subs.forEach(function(s){ q.push(s); }); });
-  return q;
+  return out;
+}
+
+/* 独立片的贪心次序：每次挑「离已拼的最近」的那一片（切比雪夫距离，平手编号小）。
+   `done` 既有棋盘上原有的（＝主区），也有这一遍刚排上的组/片 —— 所以
+   「先放靠近主区的块」和「先放靠近连片的块」是同一条规则：
+   连片每长一块，它周围的片就更近一步，自然被排到前面。
+   best[i] 维护「i 到 done 里最近一块的距离」，done 每进一块就增量刷新，
+   免得每一步都对全部已拼块重算一遍。 */
+function growSolo(solo, done, doneRC, out, rcOf){
+  if(!solo.length) return;
+  var best={}, soloRC=[];
+  solo.forEach(function(i,k){
+    soloRC[k]=rcOf(i);
+    if(!done.has(i)) best[i]=Infinity;
+  });
+  function upd(qr,qc){
+    for(var k=0;k<solo.length;k++){
+      var i=solo[k];
+      if(done.has(i)) continue;
+      var p=soloRC[k];
+      var d=Math.max(Math.abs(p.row-qr), Math.abs(p.col-qc));
+      if(d<best[i]) best[i]=d;
+    }
+  }
+  doneRC.forEach(function(q){ upd(q.row,q.col); });
+  var leftSolo=solo.filter(function(i){ return !done.has(i); });
+  while(leftSolo.length){
+    var pick=0;
+    for(var k=1;k<leftSolo.length;k++){
+      var a=leftSolo[k], b=leftSolo[pick];
+      if(best[a]<best[b] || (best[a]===best[b] && a<b)) pick=k;
+    }
+    var q=leftSolo.splice(pick,1)[0];
+    out.push({ ids:[q], isGrp:false, n:1, head:q });
+    done.add(q);
+    var qp=rcOf(q); doneRC.push(qp);
+    upd(qp.row,qp.col);
+  }
 }
 
 /* 浮条左边的照片小窗：把目标块（组）在**刚识别的那张照片**上的位置圈出来 */
