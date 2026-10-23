@@ -1992,29 +1992,27 @@ function extendInfer(cb){
                   : "延伸没有再推出新块（边角那块可以点空白处补编号）");
   if(cb) cb(got>0?got:0);
 }
-/* ---- 自动收尾：复核漏读 → 补漏 → 延伸 ----
-   前两步是「单块 ROI 放大再识别一遍」，能补回整图 2×2 分片漏掉的小字编号
-   （实测 85891 一次多出 11 块）；第三步是纯几何的往外推算。三步都不该等人手点：
-   自动识别完、可疑点审完，都自动跑一遍（延伸只在「审完可疑点」这一路跑 —— 要把
-   人工清理过的读数当基准，才敢放宽判据）。autoChain 打开时各步不弹 toast，结束时给一条合计。 */
+/* ---- 自动收尾：复核漏读 → 延伸 ----
+   复核是「单块 ROI 放大再识别一遍」，能补回整图 2×2 分片漏掉的小字编号
+   （实测 85891 一次多出 11 块）；延伸是纯几何的往外推算。
+   **补漏（fillGaps）不自动跑**——它会把每个「看着像片又没读数」的位置都送一遍 OCR，
+   在反光/阴影多的照片上误补一堆（85890 一次冒出上百处），还占着服务让人干等；
+   要补就点工具条上的「补漏 N」，由人看着办。
+   autoChain 打开时各步不弹 toast，结束时给一条合计。 */
 var autoChain=false, autoBusy=false;
 function autoVerify(tag, cb, opt){
   opt=opt||{};
-  var doExt = !!opt.extend;          // 审完/补漏完都可以再推一次（extendInfer 内部自己判有没有收获）
+  var doExt = !!opt.extend;          // 审完可疑点可以再推一次（extendInfer 内部自己判有没有收获）
   if(autoBusy || !scan.ocr){ if(cb) cb(0); return; }
-  var nW=(scan.weakCells||[]).length, nG=(scan.gaps||[]).length;
-  if(!OSVC.ok){ nW=0; nG=0; }                  // 服务没连：复核/补漏做不了，但延伸照跑
-  if(!nW && !nG && !doExt){ if(cb) cb(0); return; }
+  var nW=(scan.weakCells||[]).length;
+  if(!OSVC.ok){ nW=0; }                        // 服务没连：复核做不了，但延伸照跑
+  if(!nW && !doExt){ if(cb) cb(0); return; }
   autoBusy=true; autoChain=true;
-  $("scanTip").textContent="自动复核中…（复核漏读 + 补漏"+(doExt?" + 延伸":"")+"，别急着应用）";
+  $("scanTip").textContent="自动复核中…（复核漏读"+(doExt?" + 延伸":"")+"，别急着应用）";
   var got=0, gotExt=0;
   var stage1=function(next){
     if(!nW) return next();
     recheckWeak(function(d){ got+=d; next(); });
-  };
-  var stage2=function(next){
-    if(!(scan.gaps||[]).length) return next();       // 复核之后 gaps 会变，现算
-    fillGaps(function(d){ got+=d; next(); });
   };
   var stage3=function(next){
     if(!doExt) return next();
@@ -2023,18 +2021,16 @@ function autoVerify(tag, cb, opt){
   var wrap=function(next){ try{ next(); }catch(err){ autoBusy=false; autoChain=false; if(cb) cb(got+gotExt); } };
   wrap(function(){
     stage1(function(){
-      stage2(function(){
-        stage3(function(){
-          autoBusy=false; autoChain=false;
-          if(scan.calibrated) scanCalTip();
-          drawScan(); updateScanStats();
-          var msg=[];
-          if(got) msg.push("复核补回 "+got+" 块");
-          if(gotExt) msg.push("延伸 "+gotExt+" 块");
-          if(msg.length) toast((tag?tag+" · ":"")+msg.join(" · "));
-          else if(tag) toast(tag+" · 没有可补的编号，可以直接应用");
-          if(cb) cb(got+gotExt);
-        });
+      stage3(function(){
+        autoBusy=false; autoChain=false;
+        if(scan.calibrated) scanCalTip();
+        drawScan(); updateScanStats();
+        var msg=[];
+        if(got) msg.push("复核补回 "+got+" 块");
+        if(gotExt) msg.push("延伸 "+gotExt+" 块");
+        if(msg.length) toast((tag?tag+" · ":"")+msg.join(" · "));
+        else if(tag) toast(tag+" · 没有可补的编号，可以直接应用");
+        if(cb) cb(got+gotExt);
       });
     });
   });
