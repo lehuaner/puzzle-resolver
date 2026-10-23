@@ -9,7 +9,8 @@ export var LS_CFG = "puzzleMap.cfg.v1";
 
 export var DEFAULT_CFG = {
   total: 1000, cols: 40, zoneSize: 250,
-  order: "col", origin: "tl", showIndex: true, cellSize: 56, gap: 3
+  order: "col", origin: "tl", showIndex: true, cellSize: 56, gap: 3,
+  guideMinView: 30
 };
 
 export function loadJSON(k, d) { try { var r = localStorage.getItem(k); if (r) return JSON.parse(r); } catch (e) {} return d; }

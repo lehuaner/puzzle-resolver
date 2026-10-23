@@ -10,8 +10,10 @@ function cfgPreview(){
   var total=parseInt($("fTotal").value,10)||0;
   var cols=parseInt($("fCols").value,10)||0;
   var zs=parseInt($("fZone").value,10)||0;
+  var mv=parseInt($("fMinView").value,10)||0;
   var sz=parseInt(getSeg("segSize"),10)||56;
   if(!total||!cols||!zs){ $("cfgPreview").textContent="请填写完整的数字"; return; }
+  if(mv<10||mv>100){ $("cfgPreview").textContent="引导最少可见要填 10 ~ 100 之间的百分数"; return; }
   var r=Math.ceil(total/cols), zc=Math.ceil(total/zs), per=[];
   for(var z=0;z<zc;z++) per.push(zoneLetter(z)+" "+(Math.min((z+1)*zs,total)-z*zs));
   var cw=r*cols;
@@ -41,11 +43,12 @@ function getSeg(id){ var b=$(id).querySelector("button.on"); return b?b.dataset.
 
 function fillSetForm(){
   $("fTotal").value=S.cfg.total; $("fCols").value=S.cfg.cols; $("fZone").value=S.cfg.zoneSize;
+  $("fMinView").value=(S.cfg.guideMinView==null?30:S.cfg.guideMinView);
   setSeg("segSize",S.cellSize); setSeg("segOrder",S.cfg.order);
   setSeg("segOrigin",S.cfg.origin||"tl"); setSeg("segShow",S.cfg.showIndex?"1":"0");
   cfgPreview();
 }
-["fTotal","fCols","fZone"].forEach(function(id){ $(id).addEventListener("input",cfgPreview); });
+["fTotal","fCols","fZone","fMinView"].forEach(function(id){ $(id).addEventListener("input",cfgPreview); });
 ["segSize","segOrder","segOrigin","segShow"].forEach(function(id){
   $(id).addEventListener("click",function(e){
     var b=e.target.closest?e.target.closest("button"):null; if(!b) return;
@@ -58,6 +61,7 @@ $("setClose").addEventListener("click",function(){ $("ovSet").classList.remove("
 $("ovSet").addEventListener("click",function(e){ if(e.target===$("ovSet")) $("ovSet").classList.remove("on"); });
 $("bDefault").addEventListener("click",function(){
   $("fTotal").value=DEFAULT_CFG.total; $("fCols").value=DEFAULT_CFG.cols; $("fZone").value=DEFAULT_CFG.zoneSize;
+  $("fMinView").value=(DEFAULT_CFG.guideMinView==null?30:DEFAULT_CFG.guideMinView);
   setSeg("segSize",DEFAULT_CFG.cellSize); setSeg("segOrder",DEFAULT_CFG.order);
   setSeg("segOrigin",DEFAULT_CFG.origin); setSeg("segShow","1");
   cfgPreview();
@@ -67,10 +71,12 @@ $("bApply").addEventListener("click",function(){
   var total=parseInt($("fTotal").value,10);
   var cols=parseInt($("fCols").value,10);
   var zs=parseInt($("fZone").value,10);
+  var mv=parseInt($("fMinView").value,10);
   var sz=parseInt(getSeg("segSize"),10)||56;
   if(!total||total<4||total>4000){ toast("总片数需在 4 ~ 4000 之间"); return; }
   if(!cols||cols<2||cols>100){ toast("每行片数需在 2 ~ 100 之间"); return; }
   if(!zs||zs<1){ toast("每个大区片数需大于 0"); return; }
+  if(!mv||mv<10||mv>100){ toast("引导最少可见需在 10% ~ 100% 之间"); return; }
 
   saveNow();
   var old=S.states, oldTotal=S.cfg.total;
@@ -78,6 +84,7 @@ $("bApply").addEventListener("click",function(){
   S.cfg.order=getSeg("segOrder")||"col";
   S.cfg.origin=getSeg("segOrigin")||"tl";
   S.cfg.showIndex=getSeg("segShow")==="1";
+  S.cfg.guideMinView=mv;                    // 引导/找点缩放时画布至少可见的比例（%）
   S.cellSize=sz; S.rows=calcRows();
   var arr=new Uint8Array(S.cfg.total+1);
   var n=Math.min(oldTotal,S.cfg.total);

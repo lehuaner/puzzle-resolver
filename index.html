@@ -141,6 +141,10 @@
           <button data-v="1">显示</button><button data-v="0">隐藏</button>
         </div>
       </div>
+      <div class="row">
+        <label>引导最少可见<span class="desc">定位时画布至少要看到这个比例（%）。放大到只剩一小角就没法在真实拼图上找块了；设得越大块显得越小，位置靠左侧小地图认</span></label>
+        <input class="num" id="fMinView" type="number" min="10" max="100" step="5" inputmode="numeric">
+      </div>
       <div class="preview" id="cfgPreview"></div>
       <div class="row" style="border-top:1px solid #1b2531;margin-top:10px">
         <label>数据<span class="desc">进度自动存在本机浏览器，换设备请导出导入</span></label>

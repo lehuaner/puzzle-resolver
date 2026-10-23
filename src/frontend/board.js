@@ -172,6 +172,18 @@ export function focusSet(list,opt){
   var box=Math.min(W, visH)*0.42;
   var s=Math.min(box/bw, box/bh);
   s=Math.max(0.55, Math.min(2.6, s));   // 单块放大到 2.6 封顶，整片最多缩到 0.55
+  /* 画布可见下限：放得太大就只看见一小角，人在真实拼图上完全找不到「这块大概在整幅哪儿」
+     （引导/找点共用的缩放）。可见比例按**面积**算：W*visH / (contentW*contentH*s²) ≥ minView，
+     反解出 s 的上限；板子本身就比视口小（100% 可见）时这条不起作用。
+     minView 在设置里可调（默认 30%）。 */
+  var minView=(S.cfg.guideMinView==null?30:+S.cfg.guideMinView)/100;
+  if(minView>0 && S.contentW>0 && S.contentH>0){
+    var cap=Math.sqrt(W*visH/(S.contentW*S.contentH*minView));
+    /* 绝对下限 0.15：这是「防成一枚邮票」的兜底，不是缩放策略。
+       注意别把它抬到 0.35 之类 —— 本盘 1000 片时 cap(30%)≈0.36，抬到 0.35 以上
+       会让用户设置的 40%~100% 整段失效（cap 被守卫挡掉，悄悄回到放大状态）。 */
+    if(cap>0.15 && cap<s) s=cap;
+  }
 
   var cxb=(minC-1)*S.step+bw/2, cyb=(minR-1)*S.step+bh/2;   // 目标中心（板坐标，未缩放）
   var near=null;
