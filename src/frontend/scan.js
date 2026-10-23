@@ -2919,52 +2919,54 @@ export function scanGuideInfo(){
   return { grpOf:grpOf, nGroups:(scan.groups?scan.groups.length:0), block:!!scan.blockMode };
 }
 
-/* 照片小窗：把目标块（或整组）在**刚识别的那张照片**上的位置圈出来。
-   外扩约 1.1 片，能看到这块周围是什么颜色/形状 —— 这正是人眼确认"就是它"的依据。 */
+/* 照片小窗 = **整张输入照片 + 目标所在位置**（地图思路：先看全貌，再找钉子）。
+   以前是裁目标周围的一小块——只看到局部，看不出这块在整张照片的哪个角落，
+   换一条目标时画面整块跳走，完全没有"我进行到哪儿了"的感觉。
+   现在：整图按 contain 铺进小窗（**不裁剪、不转正/不旋转**，保持拍下来的原始方向），
+   其余压暗、目标那一小块原样重画提亮，再套金色框 + 每块中心一个点。 */
 export function scanGuideDraw(cv, ids){
   var ctx=cv.getContext("2d"), W=cv.width, H=cv.height;
   ctx.clearRect(0,0,W,H);
   if(!scan.img||!scan.ocr) return false;
-  var pts=[], mx=0;
+  var iw=scan.img.width, ih=scan.img.height;
+  if(!(iw>0&&ih>0)) return false;
+  ctx.fillStyle="#0b0f08"; ctx.fillRect(0,0,W,H);
+  var s=Math.min(W/iw, H/ih), dw=iw*s, dh=ih*s, ox=(W-dw)/2, oy=(H-dh)/2;
+  try{ ctx.drawImage(scan.img, ox, oy, dw, dh); }catch(err){ return false; }
+  var k=iw/scan.ocr.w, pts=[];
   (ids||[]).forEach(function(i){
     var p=photoPosOf(i); if(!p) return;
     if(!p.s) p.s=Math.min(scan.ocr.w,scan.ocr.h)/18;
-    if(p.s>mx) mx=p.s;
-    pts.push({x:p.x, y:p.y, s:p.s, i:i});
+    pts.push({ x:p.x*k, y:p.y*k, s:p.s*k });
   });
-  if(!pts.length) return false;
+  if(!pts.length) return true;                  // 整图照画，只是这一条没有可钉的位置
   var bx=1e9, by=1e9, ex=-1e9, ey=-1e9;
+  pts.forEach(function(p){ var hs=(p.s||0)*0.6;
+    if(p.x-hs<bx) bx=p.x-hs; if(p.y-hs<by) by=p.y-hs;
+    if(p.x+hs>ex) ex=p.x+hs; if(p.y+hs>ey) ey=p.y+hs; });
+  function tx(x){ return ox+x*s; } function ty(y){ return oy+y*s; }
+  var wx0=tx(bx), wy0=ty(by), wx1=tx(ex), wy1=ty(ey);
+  /* 整图缩到小窗后，一块拼图只剩两三个像素 —— 给标记一个最小可视尺寸，
+     钉得住（看得见在哪），又不至于盖住半张图。 */
+  var MIN=Math.max(14, Math.min(dw,dh)*0.20);
+  if(wx1-wx0<MIN){ var cx=(wx0+wx1)/2; wx0=cx-MIN/2; wx1=cx+MIN/2; }
+  if(wy1-wy0<MIN){ var cy=(wy0+wy1)/2; wy0=cy-MIN/2; wy1=cy+MIN/2; }
+  wx0=Math.max(ox,wx0); wy0=Math.max(oy,wy0);
+  wx1=Math.min(ox+dw,wx1); wy1=Math.min(oy+dh,wy1);
+  // 压暗 → 目标区原样重画提亮（地图上的高亮块）
+  ctx.fillStyle="rgba(6,10,8,.46)"; ctx.fillRect(ox,oy,dw,dh);
+  var ix0=(wx0-ox)/s, iy0=(wy0-oy)/s, isw=(wx1-wx0)/s, ish=(wy1-wy0)/s;
+  var sx0=Math.max(0,ix0), sy0=Math.max(0,iy0);
+  var sw=Math.min(iw,ix0+isw)-sx0, sh=Math.min(ih,iy0+ish)-sy0;
+  if(sw>1&&sh>1) ctx.drawImage(scan.img, sx0,sy0,sw,sh, tx(sx0),ty(sy0), sw*s, sh*s);
+  ctx.strokeStyle="rgba(255,214,80,.98)"; ctx.lineWidth=Math.max(1.6,W*0.018);
+  ctx.strokeRect(wx0,wy0,wx1-wx0,wy1-wy0);
+  var pad=Math.max(3,W*0.045);
+  ctx.strokeStyle="rgba(255,214,80,.40)"; ctx.lineWidth=Math.max(1,W*0.010);
+  ctx.strokeRect(wx0-pad,wy0-pad,(wx1-wx0)+pad*2,(wy1-wy0)+pad*2);
   pts.forEach(function(p){
-    if(p.x-p.s*0.62<bx) bx=p.x-p.s*0.62;
-    if(p.y-p.s*0.62<by) by=p.y-p.s*0.62;
-    if(p.x+p.s*0.62>ex) ex=p.x+p.s*0.62;
-    if(p.y+p.s*0.62>ey) ey=p.y+p.s*0.62;
+    ctx.fillStyle="rgba(255,233,168,.95)";
+    ctx.beginPath(); ctx.arc(tx(p.x),ty(p.y),Math.max(1.4,W*0.013),0,6.2832); ctx.fill();
   });
-  var minW=mx*3.0, maxW=mx*9.0, cw=ex-bx, ch=ey-by;
-  if(cw<minW){ bx-=(minW-cw)/2; ex+=(minW-cw)/2; cw=ex-bx; }
-  if(ch<minW){ by-=(minW-ch)/2; ey+=(minW-ch)/2; ch=ey-by; }
-  if(cw>maxW){ var k1=maxW/cw, nw1=cw*k1, nh1=ch*k1;
-    bx+=(cw-nw1)/2; ex=bx+nw1; by+=(ch-nh1)/2; ey=by+nh1; }
-  var ar=W/H; cw=ex-bx; ch=ey-by;
-  if(cw/ch<ar){ var nw2=ch*ar; bx-=(nw2-cw)/2; ex+=(nw2-cw)/2; }
-  else { var nh2=cw/ar; by-=(nh2-ch)/2; ey+=(nh2-ch)/2; }
-  var ow=scan.ocr.w, oh=scan.ocr.h;
-  if(ex-bx>ow){ bx=0; ex=ow; } else { if(bx<0){ ex-=bx; bx=0; } if(ex>ow){ bx-=(ex-ow); ex=ow; } }
-  if(ey-by>oh){ by=0; ey=oh; } else { if(by<0){ ey-=by; by=0; } if(ey>oh){ by-=(ey-oh); ey=oh; } }
-  var scx=scan.img.width/ow, scy=scan.img.height/oh;
-  ctx.save();
-  ctx.fillStyle="#0b0f08"; ctx.fillRect(0,0,W,H);
-  ctx.drawImage(scan.img, bx*scx, by*scy, (ex-bx)*scx, (ey-by)*scy, 0,0,W,H);
-  var fs=W/(ex-bx);
-  pts.forEach(function(p){
-    var x=(p.x-bx)/(ex-bx)*W, y=(p.y-by)/(ey-by)*H, sd=Math.max(10,p.s*fs);
-    ctx.strokeStyle="rgba(255,214,80,.98)";
-    ctx.lineWidth=Math.max(2,sd*0.08);
-    ctx.strokeRect(x-sd/2, y-sd/2, sd, sd);
-    ctx.strokeStyle="rgba(255,214,80,.35)";
-    ctx.lineWidth=Math.max(1,sd*0.035);
-    ctx.strokeRect(x-sd*0.64, y-sd*0.64, sd*1.28, sd*1.28);
-  });
-  ctx.restore();
   return true;
 }

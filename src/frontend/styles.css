@@ -332,8 +332,9 @@ body.locon .loccard{display:flex}
   background:rgba(20,28,16,.96);border:1px solid #4a5e33;border-radius:16px;
   padding:10px 12px;box-shadow:0 14px 38px rgba(0,0,0,.55);backdrop-filter:blur(8px)}
 body.guideon .guidebar{display:flex}
-#gdPic{display:none;width:92px;height:69px;border-radius:8px;border:1px solid #3a4a2c;
-  background:#0b0f08;flex:0 0 auto;object-fit:cover}
+/* 整图小窗（地图）：给足尺寸，才看得出目标在照片的哪个角落 */
+#gdPic{display:none;width:108px;height:81px;border-radius:8px;border:1px solid #3a4a2c;
+  background:#0b0f08;flex:0 0 auto;object-fit:fill}
 .gd-main{display:flex;align-items:center;gap:10px;min-width:0;flex:1;cursor:pointer;flex-wrap:wrap}
 .gd-main:active b{transform:scale(.94)}
 .gd-main b{flex:0 0 auto;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
