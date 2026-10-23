@@ -34,7 +34,9 @@
 ## 引导 / 聚焦 / 高亮（v24~v29g）
 - **高亮唯一实现 `beacon.js`**：`beaconShow(ids)` 挂 `.gcur`（常驻绿描边）+620ms 切 `.gblink`；找点 9s 自动收。`.cell.gcur` 必须 `overflow:visible`。
 - **聚焦唯一实现 `board.focusSet(list,opt)`**：基准 `min(W,visH)*0.42/max(bw,bh)` 夹 0.55~2.6；再算「最近一块已完成(1) 整格可见」`need=(半视口-10)/(|d|+半格)`，`s=max(0.3,min(s,need))`；0.3 装不下就**让位平移**（量按屏幕像素封顶 `(W/2-70)/s`）；`visH` 扣 `#guideBar`/`#locCard` 遮挡。找点 `locate()` 必须**先 showLocCard 再 focusSet**。
-- **v29g 缩放下限**：可见比例按面积 `W*visH/(contentW*contentH*s²) ≥ minView`（默认 30%，`S.cfg.guideMinView`，设置项 10~100），反解 `cap=sqrt(...)` 作 s 上限（0.35 兜底防成邮票）。
+- **v29g 缩放下限**：可见比例按面积 `W*visH/(contentW*contentH*s²) ≥ minView`（默认 30%，`S.cfg.guideMinView`，设置项 10~100），反解 `cap=sqrt(...)` 作 s 上限。
+  **坑：兜底守卫别压在默认值线上**。原来写 `if(cap>0.35 && cap<s)`，而本盘 1000 片时 `cap(30%)≈0.359` —— 正好压线，默认看着生效；一调到 40% 以上 cap 跌破 0.35 被**整个跳过**，悄悄回到放大状态（实测 60% 时可见只剩 4%）。绝对下限要留足余量（现为 0.15，仅防成一枚邮票）。**用户可调参数的默认值往往就贴在兜底线上，必须实测默认值两侧**。
+  - 实测（85889，视口 500×410、浮条压底 131px、content 2357×1472）：15%→s=0.508、30%→s=0.3595、60%→s=0.254、100%→s=0.1969，四档可见比例精确命中。「找点」共用 focusSet 同样受约束。
 - **引导队列**：`buildQueue`（切条）→ `growOrder`（排序，一次算定）：以棋盘已有块为种子，①挨着上一条 ②挨着已铺开整片 ③另起一片；每档内块大优先→近→编号小。整块模式按**网格连通分量**成条（不看 OCR 组、不受 MAXC=9），没组的块顺 4 邻并进相邻组。`spreadSplit` 按**填充率** n/(bboxW*bboxH)<0.34 拆条（实心一大片不拆），BFS 从最小编号长出去 ≤9 块且 bbox 跨度 ≤10 格。
 - **引导小窗 `#gdPic`**：地图式——整图 contain 铺入、其余压暗 rgba(6,10,8,.46)、目标区重画提亮 + 金框 + 每块中心点；标记最小可视尺寸 14px。
 - **撤销联动**：`interact.js` `setUndoHook(fn)`；`guideOnUndo(chunk)` 与 `G.applied` **栈顶** `{k,ids}` 比对。**必须用栈不能 k--**（跳过不产生撤销记录）。「放好了」不再弹撤销提示。
