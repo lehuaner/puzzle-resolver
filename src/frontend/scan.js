@@ -35,6 +35,7 @@ window.__extLv=function(){ return extLv; };
 window.__autoVerify=function(tag,cb,opt){ return autoVerify(tag,cb,opt); };   // 同上：自动收尾链
 window.__rc=idxToRC;                                                  // 同上：编号→行列
 window.__cell=scanCellBase;                                           // 同上：行列→照片坐标
+window.__guide=function(ids){ return startGuide(ids); };              // 同上：直接起引导（测排队）
 var GRP_TXT=["#6ec8ff","#ffb050","#d878ff","#78ffd0","#ff78b8","#d0ff5a","#8ca0ff","#ffdc5a"]; // 拼好组文字色
 var scanCanvas=$("scanCanvas"), scanCtx=null;
 

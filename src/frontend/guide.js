@@ -153,12 +153,58 @@ function buildQueue(targets){
     ids.forEach(function(i){ var p=idxToRC(i); c+=p.col; r+=p.row; });
     return Math.hypot(c/ids.length-mc, r/ids.length-mr);
   }
+  items=spreadSplit(items);
   items.forEach(function(it){
     it.n=it.ids.length;
     it.dist=centroidDist(it.ids);
     it.head=it.ids[0];        // 编号最小的一块：平手时当「从上往下、从左往右」的次序
   });
   return growOrder(items);
+}
+
+/* 一条里的块如果**摊得很开**（占的格子远多于块数），预览为了装下它会把视野拉得很远，
+   高亮又零零散散撒在各处 → 用户：「预览框内显示的范围过大，不好找图」。
+   按网格 BFS 把它切成「连得上、又不摊太开」的小片。
+   判据用**填充率**而不是绝对块数：一整片实心区域（拼好的主体）本来就该一条走完
+   （用户早先要的正是「只引导一组就行」），只有散开的才拆。 */
+var SPREAD_FILL=0.34, SPREAD_MIN=4, SPREAD_SPAN=10;
+function bboxCells(ids){
+  var r0=1e9, r1=-1e9, c0=1e9, c1=-1e9;
+  ids.forEach(function(i){
+    var p=idxToRC(i);
+    if(p.row<r0) r0=p.row; if(p.row>r1) r1=p.row;
+    if(p.col<c0) c0=p.col; if(p.col>c1) c1=p.col;
+  });
+  return { r0:r0, r1:r1, c0:c0, c1:c1, h:r1-r0+1, w:c1-c0+1 };
+}
+function spreadSplit(items){
+  var out=[];
+  (items||[]).forEach(function(it){
+    var ids=it.ids||[];
+    if(ids.length<SPREAD_MIN){ out.push(it); return; }
+    var bb=bboxCells(ids);
+    if(ids.length/(bb.w*bb.h) >= SPREAD_FILL){ out.push(it); return; }   // 实心一大片：不拆
+    var left=new Set(ids);
+    while(left.size){
+      var seed=Math.min.apply(null,Array.from(left));
+      var comp=[], st=[seed]; left.delete(seed);
+      while(st.length){
+        var c0=st.shift(); comp.push(c0);
+        if(comp.length>=MAXC) break;
+        var nb=(S.adj[c0]||[]).slice().sort(function(a,b){ return a-b; });
+        for(var q=0;q<nb.length;q++){
+          var j=nb[q]; if(!left.has(j)) continue;
+          if(comp.length>=MAXC) break;
+          var tb=bboxCells(comp.concat([j]));
+          if(tb.h>SPREAD_SPAN || tb.w>SPREAD_SPAN) continue;   // 加上它就摊太开了：留给下一片
+          left.delete(j); st.push(j);
+        }
+      }
+      comp.sort(function(a,b){ return a-b; });
+      out.push({ ids:comp, grp:it.grp, group:false, merged:comp.length>=2, split:true });
+    }
+  });
+  return out;
 }
 
 /* 按「连得起来」排序（顺序在进引导时一次算定，这样撤销回退才能按序号走）：
@@ -309,7 +355,7 @@ function guideNext(ok){
     if(r.n){
       G.done++;
       if(r.ids) G.applied.push({ k:at, ids:r.ids });
-      toast("已放 "+r.n+" 块"+(r.demoted?("，其中 "+r.demoted+" 块待定（还没连上主片区）"):"")+" · 放错了按 ↶ 撤销可退回这一步");
+      toast("已放 "+r.n+" 块"+(r.demoted?("，其中 "+r.demoted+" 块待定（还没连上主片区）"):""));
       vibrate(15);
     }
   } else if(ids.length){
