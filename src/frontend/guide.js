@@ -264,19 +264,19 @@ function guideOnUndo(chunk){
 }
 setUndoHook(guideOnUndo);
 
-// ok=true「放好了」：这一块写进棋盘；ok=false「跳过」：保持未拼。
+// ok=true「放好了」：这一步写进棋盘；ok=false「跳过」：保持未拼。
 function guideNext(ok){
   if(!S.guideActive) return;
   var ids=(G.cur||[]).slice();
   var at=G.k;
+  /* 点「放好了」不弹任何提示（用户：「不要有任何提示出现」）——
+     棋盘上那几片转绿、引导自己跳到下一步，本身就是反馈；再弹一条 toast
+     每步都拦一下视线。只留一下极轻的震动确认点到。 */
   if(ok){
     var r=applyItem(ids);
     if(r.n){
       G.done++;
       if(r.ids) G.applied.push({ k:at, ids:r.ids });
-      toast(r.n===1 ? ("已放好 "+fmt(ids[0])
-                        +(r.demoted?("（还没连上主片区，先记待定）"):""))
-                     : ("已放 "+r.n+" 块"+(r.demoted?("，其中 "+r.demoted+" 块待定（还没连上主片区）"):"")));
       vibrate(15);
     }
   } else if(ids.length){

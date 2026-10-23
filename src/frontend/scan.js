@@ -2918,15 +2918,17 @@ export function scanGuideInfo(){
   return { grpOf:grpOf, nGroups:(scan.groups?scan.groups.length:0), block:!!scan.blockMode };
 }
 
-/* 照片小窗 = **整张输入照片 + 当前这一片的位置**（地图思路：先看全貌，再找钉子）。
+/* 照片小窗 = **整张输入照片 + 当前这一步每一片的位置**（地图思路：先看全貌，再找钉子）。
    以前是裁目标周围的一小块——只看到局部，看不出这块在整张照片的哪个角落，
    换一条目标时画面整块跳走，完全没有"我进行到哪儿了"的感觉。
    现在：整图按 contain 铺进小窗（**不裁剪、不转正/不旋转**，保持拍下来的原始方向），
-   其余压暗、当前这一片原样重画提亮，再套金色框 + 中心点 + 编号小牌。
-   一步一块（见 guide.js），所以钉的就是**具体哪一片**：
+   其余压暗、当前这一步的每一片原样重画提亮，再套金色旋转方框 + 中心点。
+   **只高亮，不写序号**（用户：「引导时原图上不要显示序号，只有高亮」）——
+   编号由浮条报，小窗只负责"在整张照片的哪儿"。
+   一步一块 / 一个拼好组（见 guide.js），所以钉的就是具体哪几片：
      · 已经放到棋盘上的块 → 涂成照片的背景色（桌面/地板）。用户点一次「放好了」，
        预览上就少一块，进度一眼看得出来，也不会跟当前目标抢注意力；
-     · 当前这一片 → 按片子的实际朝向画旋转方框，对着形状也能认出是哪一块。 */
+     · 当前这几片 → 按片子的实际朝向画旋转方框，对着形状也能认出是哪一块。 */
 var DIM_A=0.46, DIM_RGB=[6,10,8];
 /* 照片的「背景色」＝桌面/地板：取最外圈一圈像素的中位色（那一片不会有拼图）。
    同一张图只算一次（引导里每一步都会重画小窗）。 */
@@ -2994,7 +2996,7 @@ export function scanGuideDraw(cv, ids){
   (ids||[]).forEach(function(i){
     var p=photoPosOf(i); if(!p) return;
     if(!p.s) p.s=Math.min(scan.ocr.w,scan.ocr.h)/18;
-    pts.push({ i:i, x:p.x*k, y:p.y*k, s:p.s*k, ang:p.ang||0 });
+    pts.push({ x:p.x*k, y:p.y*k, s:p.s*k, ang:p.ang||0 });
   });
   if(!pts.length){ erasePlaced(ctx,ox,oy,dw,dh,s,k,null); return true; }  // 整图照画，只是这一块没有可钉的位置
   var bx=1e9, by=1e9, ex=-1e9, ey=-1e9;
@@ -3030,20 +3032,6 @@ export function scanGuideDraw(cv, ids){
   pts.forEach(function(p){
     ctx.fillStyle="rgba(255,233,168,.95)";
     ctx.beginPath(); ctx.arc(tx(p.x),ty(p.y),Math.max(1.8,W*0.013),0,6.2832); ctx.fill();
-  });
-  // 编号小牌：预览自己就说出「这是哪一片」，不用只靠框猜。
-  // 整组一步时组里可能有几十片，小窗只有两百像素宽 —— 只标前三片，其余靠金框和浮条文案。
-  pts.slice(0,3).forEach(function(p){
-    var t=fmt(p.i), fs=Math.max(11,Math.round(W*0.105));
-    ctx.font="700 "+fs+"px system-ui,sans-serif";
-    var tw=ctx.measureText(t).width, ph=Math.round(fs*1.3), pw=Math.round(tw+fs*0.5);
-    var px=tx(p.x)+p.s*s*0.62+4, py=ty(p.y)-ph/2;
-    px=Math.min(Math.max(2,px), W-pw-2); py=Math.min(Math.max(2,py), H-ph-2);
-    ctx.fillStyle="rgba(10,14,9,.84)"; ctx.fillRect(px,py,pw,ph);
-    ctx.strokeStyle="rgba(255,214,80,.55)"; ctx.lineWidth=1; ctx.strokeRect(px,py,pw,ph);
-    ctx.fillStyle="rgba(255,226,140,.98)";
-    ctx.textBaseline="middle"; ctx.textAlign="left";
-    ctx.fillText(t, px+fs*0.25, py+ph/2+0.5);
   });
   // 最后涂掉已放好的块：放在压暗之后涂，颜色用「压暗后的背景色」→ 溶进桌面，不是一块补丁
   erasePlaced(ctx,ox,oy,dw,dh,s,k,ids);
