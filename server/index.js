@@ -110,12 +110,14 @@ if (isProd) {
     res.sendFile(path.join(DIST, "index.html"));
   });
 } else {
-  // 开发模式：Vite 以中间件方式挂在同一个 HTTP 服务上（HMR 走自己的 WS 路径，互不干扰）
+  // 开发模式：Vite 以中间件方式挂在同一个 HTTP 服务上。
+  // appType 保持默认 spa：由 Vite 托管 index.html 与 HTML 回退（custom 会 404 掉根路径）。
+  // HMR 走独立端口（Vite 自建 WS 服务）：指到 8848 会和 Express 抢端口，
+  // 客户端连不上 → 无限重连/整页重载（表现为页面疯狂闪烁）。
   const { createServer: createVite } = await import("vite");
   const vite = await createVite({
     root: ROOT,
-    server: { middlewareMode: true, hmr: { port: PORT } },
-    appType: "custom"
+    server: { middlewareMode: true, hmr: { port: 8850 } }
   });
   app.use(vite.middlewares);
 }
