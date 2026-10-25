@@ -3,9 +3,12 @@
 局域网多人实时同步的拼图定位与进度看板，触摸屏优先。专为「照片拼图背面印着编号」的实物拼图设计：
 在电脑/平板上开一个看板，对着照片自动识别每片的编号与摆放位置，家人朋友各拿一台设备在同一张图上实时标记进度。
 
-![完成度 100% 的看板](docs/screenshots/board-completed.png)
-
-![空白看板](docs/screenshots/board-empty.png)
+<p align="center">
+  <img src="docs/screenshots/board-completed.png" width="49%" alt="看板 · 已完成">
+  <img src="docs/screenshots/board-70.png" width="49%" alt="看板 · 70% 进行中">
+  <img src="docs/screenshots/scan-interface.png" width="49%" alt="照片识别 · PP-OCR">
+  <img src="docs/screenshots/board-empty.png" width="49%" alt="看板 · 空白">
+</p>
 
 ## 功能
 
